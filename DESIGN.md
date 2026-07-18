@@ -160,16 +160,21 @@ The app ships with a web console — the desktop control surface for sessions.
 
 - **Spawn.** A plus button creates a session: pick harness + model, and an **agent
   frame** opens. Fan out many frames at once, tile or focus them.
-- **The agent frame.** Each frame is one session. Its main area is the
-  conversation. Input is multimodal — type, hold-to-talk voice, image, and
-  drag-and-drop of files or folders straight onto the frame, all forwarded to that
-  session's harness.
+- **The agent frame.** Each frame is one session and **streams by default** — the
+  harness output flows live into the frame as an emulated terminal, so you always
+  see what the agent is doing without asking. Its main area is the conversation.
+  Input is multimodal — type, hold-to-talk voice, image, and drag-and-drop of
+  files or folders straight onto the frame, all forwarded to that session's
+  harness.
 - **Sidecar panes.** A frame menu opens panes that expand to the right without
   leaving the conversation:
   - **Browser** — the session's live app, reverse-proxied on its `app_port`, click
     and drive it in place.
   - **Diff** — the session branch's `git diff`, rendered live.
-  - **Terminal / logs** — stream from the container (read-only by default).
+  - **Full terminal (TUI).** Beyond the default read-only stream, a real
+    interactive terminal attached to the container (via pty over WebSocket), so you
+    can send slash-commands or `$`-commands directly to the harness (e.g. codex
+    control commands) and drive raw shell when needed.
 - **Frame menu actions.** Per session: rename/title, archive or delete, `/switch`
   the mobile binding to this session, pull-to-local instructions (the
   `origin.git` branch URL), and **open code** — because the repo is already cloned
@@ -178,6 +183,29 @@ The app ships with a web console — the desktop control surface for sessions.
 
 The console is pure UI over the existing HTTP API and `sessions` table; it adds no
 new session semantics.
+
+## Telegram surface (engage / disengage)
+
+One bot **per user**, not per agent. A Telegram chat is a thin remote that
+*attaches* to one session at a time — this is the trickiest part of the system, so
+it's specified explicitly.
+
+- **List.** `/agents` (or a persistent menu button) returns an inline keyboard of
+  the user's **active** sessions, one button each labelled by title. `/archived`
+  lists archived ones the same way. `/new` creates a session (prompting for
+  harness + model) and attaches to it.
+- **Engage.** Tapping a session button writes that `session_id` into the chat's
+  `surface_bindings` row — the chat is now *attached*. Plain messages (text, voice,
+  image) from then on route to that session's harness and its streamed replies come
+  back debounced via `editMessageText`. A short header confirms which agent you're
+  talking to.
+- **Disengage.** `/agents` re-lists without losing the attachment; `/detach`
+  clears the binding so the chat is idle again; tapping a different session
+  repoints the binding. Exactly one session is attached per chat at a time, so
+  there's never ambiguity about where a message goes.
+- **State lives in the binding, not the bot.** Because attachment is just the
+  `surface_bindings` row, a bot restart or a `/switch` from the web console stays
+  consistent — the chat re-attaches to whatever the row says.
 
 ## Frequent-commit safety
 
