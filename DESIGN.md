@@ -184,6 +184,24 @@ The app ships with a web console — the desktop control surface for sessions.
 The console is pure UI over the existing HTTP API and `sessions` table; it adds no
 new session semantics.
 
+### Frame window management
+
+Each frame has a **persistent state** — `docked` (tiled in the grid) or
+`minimized` — plus a separate transient **maximized** mode layered on top.
+
+- **Grid.** Docked frames auto-tile; the default tile size is a function of how
+  many frames are docked (twelve docked → a twelve-up grid).
+- **Minimize.** Sets a frame's persistent state to `minimized` (a strip/tab); the
+  remaining docked frames re-tile to fill the space.
+- **Restore.** Returns a `minimized` frame to `docked`, rejoining the grid.
+- **Maximize.** Promotes one frame to full screen and visually collapses every
+  other frame for the duration. This does **not** change the others' persistent
+  state — it's an overlay.
+- **Un-maximize (restore from maximized).** Every frame returns to its own
+  persistent state: docked frames rejoin the grid, and any frame that was already
+  `minimized` before the maximize stays minimized. Maximizing then restoring is a
+  no-op on the underlying layout.
+
 ## Telegram surface (engage / disengage)
 
 One bot **per user**, not per agent. A Telegram chat is a thin remote that
