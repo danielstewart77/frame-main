@@ -154,6 +154,31 @@ Concurrency is bounded by a semaphore sized to the box and the provider account.
   plane reverse-proxies it to a per-session URL, so you click and interact with the
   running app in the browser with zero local setup.
 
+## Web console
+
+The app ships with a web console — the desktop control surface for sessions.
+
+- **Spawn.** A plus button creates a session: pick harness + model, and an **agent
+  frame** opens. Fan out many frames at once, tile or focus them.
+- **The agent frame.** Each frame is one session. Its main area is the
+  conversation. Input is multimodal — type, hold-to-talk voice, image, and
+  drag-and-drop of files or folders straight onto the frame, all forwarded to that
+  session's harness.
+- **Sidecar panes.** A frame menu opens panes that expand to the right without
+  leaving the conversation:
+  - **Browser** — the session's live app, reverse-proxied on its `app_port`, click
+    and drive it in place.
+  - **Diff** — the session branch's `git diff`, rendered live.
+  - **Terminal / logs** — stream from the container (read-only by default).
+- **Frame menu actions.** Per session: rename/title, archive or delete, `/switch`
+  the mobile binding to this session, pull-to-local instructions (the
+  `origin.git` branch URL), and **open code** — because the repo is already cloned
+  on the host, this launches an editor view (or hands off a local `code <path>`)
+  rather than re-cloning. Cloning is only offered when no local copy exists.
+
+The console is pure UI over the existing HTTP API and `sessions` table; it adds no
+new session semantics.
+
 ## Frequent-commit safety
 
 Two layers, both cheap:
