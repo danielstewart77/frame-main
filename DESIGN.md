@@ -1,25 +1,25 @@
-# frame-main — minimal per-user mind
+# frame-main — minimal per-user agent-server
 
-A single-box agent system: one FastAPI mind server is the **control plane**. It
-provisions a pristine container per session and runs the harness (`claude`,
-`codex`, ...) inside it. One isolated mind per user, surfaces (Telegram + web)
+A single-box agent system: one FastAPI **agent-server** is the **control plane**.
+It provisions a pristine container per session and runs the harness (`claude`,
+`codex`, ...) inside it. One isolated workspace per user, surfaces (Telegram + web)
 over HTTP. No custom agent loop. The harness *is* the agent.
 
 ## Principles
 
-- **Wrap, don't rebuild.** `mind_server` only spawns `claude --resume`, streams
+- **Wrap, don't rebuild.** `agent-server` only spawns `claude --resume`, streams
   json, and pipes IO. Turn loop, tools, edits, build-test-fix all live inside
   the harness.
 - **Durable side effects, not durable process.** Resume replays the transcript,
   not in-flight work. Every turn commits and *pushes* to a per-user bare repo on
   the host, so work survives even when the container is thrown away. Idempotent
   operations make a replayed turn harmless.
-- **Control plane owns Docker; the agent never does.** Only `mind_server` touches
+- **Control plane owns Docker; the agent never does.** Only `agent-server` touches
   the Docker socket. It provisions one pristine container per session; the harness
   runs inside with no socket access. No docker-in-docker, no privilege leak, no
   agent spawning containers.
-- **Isolated mind per user.** Per-user memory, identity, and session lineage. The
-  user id is a boundary, not just a filter.
+- **Isolated workspace per user.** Per-user memory, identity, and session lineage.
+  The user id is a boundary, not just a filter.
 - **The session is the unit, not the agent.** A session row carries its own
   harness, model, and pristine container. There is no long-lived "agent" object
   that owns sessions — the session *is* the agent instance for its lifetime.
@@ -34,17 +34,17 @@ over HTTP. No custom agent loop. The harness *is* the agent.
 
 ```
 frame-main/
-├── mind_server.py          # control plane: provision containers, stream, track session
+├── agent-server.py         # control plane entrypoint: provision containers, stream, track session
 ├── sandbox/
 │   ├── Dockerfile          # base dev image (toolchain + the harness CLIs)
 │   ├── provision.py        # docker run/exec/rm + reverse-proxy registration
 │   └── entrypoint.sh       # clone session branch, run harness inside container
 ├── surfaces/
-│   ├── telegram_bot.py      # chat_id → user_id
+│   ├── telegram-bot.py      # chat_id → user_id
 │   └── web/                 # web app → user_id, diff viewer, live-app proxy (auth later)
 ├── voice/                   # Azure Whisper STT + Azure TTS, inline
 ├── hooks/
-│   └── stop_commit.sh       # commit + push session branch every turn (runs in container)
+│   └── stop-commit.sh       # commit + push session branch every turn (runs in container)
 ├── db/
 │   ├── registry.db          # central: users + sessions (SQLite)
 │   └── schema.sql
@@ -59,6 +59,14 @@ frame-main/
 Containers are ephemeral and pristine. Everything that must persist — git
 history, memory, identity — lives on the host under `users/<user_id>/` and is
 mounted (memory, identity) or pushed to (`origin.git`) from the container.
+
+**Naming.** Component, file, and service names use hyphens, never underscores
+(`agent-server`, `telegram-bot`, `stop-commit.sh`) — underscores are painful over
+voice. Hyphenated `.py` files (`agent-server.py`) are **entrypoints run
+directly** (`python agent-server.py`), never imported; importable logic lives in
+single-word modules so no module name ever needs an underscore. SQL columns and
+in-code identifiers (`user_id`, `session_id`) keep underscores — hyphens are
+illegal there and they aren't spoken names.
 
 ## Registry schema (central)
 
@@ -122,7 +130,7 @@ Both are UI over the `sessions` table. No separate code path.
 
 ## Session lifecycle (control plane)
 
-`mind_server` resolves the surface identity to a `user_id`, resolves (or creates)
+`agent-server` resolves the surface identity to a `user_id`, resolves (or creates)
 the target session, then:
 
 1. **Provision.** `docker run` a pristine container from the base image, mounting
@@ -252,17 +260,17 @@ it's specified explicitly.
 
 Two layers, both cheap:
 
-- **`hooks/stop_commit.sh`** — a Stop hook running *inside the container* that does
+- **`hooks/stop-commit.sh`** — a Stop hook running *inside the container* that does
   `git add -A && git commit && git push origin <branch>` after every turn. Because
   it pushes to the host bare repo, nothing is lost even if the container dies;
   worst case a resumed turn re-does its tail against pushed state.
-- **System-prompt discipline** — the mind is told to commit logically as it works
+- **System-prompt discipline** — the agent is told to commit logically as it works
   (durable side effects), so history is meaningful, not one giant blob per turn.
 
 ## Voice
 
 Azure Whisper for speech-to-text, an Azure neural voice for text-to-speech,
-called inline from the surface or the mind server. No separate container.
+called inline from the surface or the agent-server. No separate container.
 
 ## Deferred (multi-user machinery)
 
