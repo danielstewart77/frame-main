@@ -34,15 +34,22 @@ over HTTP. No custom agent loop. The harness *is* the agent.
 
 ```
 frame-main/
-├── agent-server.py         # control plane entrypoint: provision containers, stream, track session
+├── agent-server.py          # control plane entrypoint (run, never imported)
+├── server.py                # the HTTP API — importable app factory
+├── sessions.py              # session lifecycle: provision, turn, idle, teardown
+├── registry.py              # SQLite registry: users, identities, sessions, bindings
+├── workspace.py             # per-user host state: origin.git, memory.db, identity.md
+├── harness.py               # argv construction + stream-json normalisation
+├── voice.py                 # Azure STT/TTS behind an interface, with an offline fake
+├── config.py                # env-resolved settings
 ├── sandbox/
-│   ├── Dockerfile          # base dev image (toolchain + the harness CLIs)
-│   ├── provision.py        # docker run/exec/rm + reverse-proxy registration
-│   └── entrypoint.sh       # clone session branch, run harness inside container
+│   ├── Dockerfile           # base dev image (toolchain + the harness CLIs)
+│   ├── provision.py         # docker run/exec/rm; DockerProvisioner + FakeProvisioner
+│   └── entrypoint.sh        # clone session branch, install hook, await exec'd turns
 ├── surfaces/
-│   ├── telegram-bot.py      # chat_id → user_id
-│   └── web/                 # web app → user_id, diff viewer, live-app proxy (auth later)
-├── voice/                   # Azure Whisper STT + Azure TTS, inline
+│   ├── chat.py              # surface-agnostic engage/disengage routing
+│   ├── telegram-bot.py      # chat_id → user_id; Telegram IO only
+│   └── web/                 # web console (designed, not yet built)
 ├── hooks/
 │   └── stop-commit.sh       # commit + push session branch every turn (runs in container)
 ├── db/
@@ -50,7 +57,7 @@ frame-main/
 │   └── schema.sql
 ├── users/                   # per-user host state (gitignored) — outlives containers
 │   └── <user_id>/
-│       ├── origin.git/     # per-user BARE repo; sessions push branches here
+│       ├── origin.git/      # per-user BARE repo; sessions push branches here
 │       ├── memory.db        # per-user memory, shared across the user's sessions
 │       └── identity.md      # this user's soul seed (asked, never inferred)
 └── tests/
@@ -100,6 +107,8 @@ CREATE TABLE sessions (
   resume_id    TEXT,                    -- harness --resume id (null until first turn)
   transcript   TEXT,                    -- path to harness rollout jsonl (host-mounted)
   status       TEXT NOT NULL DEFAULT 'active',  -- active | done | archived
+  frame_state  TEXT NOT NULL DEFAULT 'closed',  -- closed | docked | minimized
+  speaker      INTEGER NOT NULL DEFAULT 0,      -- per-frame spoken playback toggle
   created_at   TEXT NOT NULL,
   last_active  TEXT NOT NULL
 );
@@ -111,7 +120,20 @@ CREATE TABLE surface_bindings (
   session_id   TEXT NOT NULL REFERENCES sessions(id),
   PRIMARY KEY (surface, external_id)
 );
+
+-- per-surface console state that belongs to no single session
+CREATE TABLE surface_layout (
+  surface           TEXT NOT NULL,
+  external_id       TEXT NOT NULL,
+  sidebar_collapsed INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (surface, external_id)
+);
 ```
+
+Frame layout is a property of the surface, not the browser tab, so it lives
+here: each session carries its own `frame_state` and `speaker` preference, and
+the sidebar's collapsed state hangs off `surface_layout`. Reopening the console
+replays both.
 
 The `resume_id` lives in SQLite, never only in process memory — a restart must be
 able to find and resume every session. A `/switch` on any surface just repoints
@@ -152,6 +174,61 @@ the target session, then:
    the container for good; the branch stays.
 
 Concurrency is bounded by a semaphore sized to the box and the provider account.
+
+## HTTP API
+
+Every surface — web console, Telegram bot, curl — speaks only this contract.
+
+```
+GET    /health
+POST   /users                                   {display_name}
+GET    /users
+POST   /identities                              {surface, external_id, display_name?} -> {user_id}
+
+POST   /users/{user_id}/sessions                {harness?, model?, title?, color?}
+GET    /users/{user_id}/sessions?status=active
+GET    /users/{user_id}/frames                  sessions to restore as frames
+GET    /sessions/{id}
+PATCH  /sessions/{id}                           {title?, color?, status?, frame_state?, speaker?}
+DELETE /sessions/{id}
+
+POST   /sessions/{id}/turn                      {prompt} -> ndjson event stream
+WS     /sessions/{id}/stream                    send {prompt}, receive events
+POST   /sessions/{id}/start                     provision the container
+POST   /sessions/{id}/stop                      stop it; state lives in origin.git
+POST   /sessions/{id}/archive                   remove the container, keep the branch
+GET    /sessions/{id}/diff
+GET    /sessions/{id}/clone-url
+
+POST   /surfaces/{surface}/{external_id}/attach {session_id}
+GET    /surfaces/{surface}/{external_id}/attach
+DELETE /surfaces/{surface}/{external_id}/attach
+GET    /surfaces/{surface}/{external_id}/layout
+PATCH  /surfaces/{surface}/{external_id}/layout {sidebar_collapsed}
+
+POST   /voice/transcribe                        multipart file -> {text}
+POST   /voice/speak                             {text, voice?} -> audio/mpeg
+```
+
+Streamed turns are normalised out of each harness's own json into one small
+vocabulary, so a surface renders `claude` and `codex` identically:
+
+| kind | payload | meaning |
+|---|---|---|
+| `session` | `resume_id` | first event; persisted to `sessions.resume_id` |
+| `text` | `text` | assistant output delta |
+| `tool` | `name` | a tool call started |
+| `result` | `text` | turn finished |
+| `error` | `text` | turn failed |
+| `raw` | `event` | unrecognised, passed through |
+
+## Swappable externals
+
+The two pieces that need the VPN sit behind interfaces with offline fakes, so
+every layer above them is exercised end to end without a proxy or a Docker
+daemon. `FRAME_PROVISIONER` selects `fake` or `docker`; `FRAME_VOICE` selects
+`fake` or `azure`. Neither switch changes a call site — see
+[docs/vpn-cutover.md](docs/vpn-cutover.md).
 
 ## Pull-down and browse
 
