@@ -161,12 +161,18 @@ The app ships with a web console — the desktop control surface for sessions.
 
 - **Spawn.** A plus button creates a session: pick harness + model, and an **agent
   frame** opens. Fan out many frames at once, tile or focus them.
+- **Session sidebar.** A left rail lists the user's sessions (active, with an
+  archived view) grouped for scanning; clicking one opens or focuses its frame.
+  The rail **collapses** to reclaim width for the grid and its open/collapsed
+  state is remembered between visits.
 - **The agent frame.** Each frame is one session and **streams by default** — the
   harness output flows live into the frame as an emulated terminal, so you always
   see what the agent is doing without asking. Its main area is the conversation.
   Input is multimodal — type, hold-to-talk voice, image, and drag-and-drop of
   files or folders straight onto the frame, all forwarded to that session's
-  harness.
+  harness. A per-frame **speaker toggle** (independent of voice input) turns
+  spoken playback of that session's replies on or off, so you can voice a busy
+  frame while the rest stay silent; the preference is remembered per session.
 - **Sidecar panes.** A frame menu opens panes that expand to the right without
   leaving the conversation:
   - **Browser** — the session's live app, reverse-proxied on its `app_port`, click
@@ -204,6 +210,20 @@ Each frame has a **persistent state** — `docked` (tiled in the grid) or
   persistent state: docked frames rejoin the grid, and any frame that was already
   `minimized` before the maximize stays minimized. Maximizing then restoring is a
   no-op on the underlying layout.
+- **Layout persistence.** The console layout survives a reload or a server
+  restart: which sessions are open as frames and each frame's persistent state
+  (`docked` / `minimized`), plus the sidebar's collapsed state, are restored on
+  return. Because the open set is a property of the surface, not the browser tab,
+  it belongs with the session/surface state rather than in client-only storage.
+
+### Mobile web console
+
+The web console is a desktop-first control surface — day-to-day mobile use is the
+Telegram surface. When the console *is* opened on a phone, its shell is **locked
+to the viewport**: the nav and frame chrome stay fixed and only the conversation
+scrolls, so a single frame reads like a chat app instead of the whole page
+panning. It collapses to one frame at a time with a back control to the session
+list rather than trying to tile a grid on a small screen.
 
 ## Telegram surface (engage / disengage)
 
