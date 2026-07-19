@@ -83,6 +83,7 @@ CREATE TABLE sessions (
   id           TEXT PRIMARY KEY,        -- our stable session uuid
   user_id      TEXT NOT NULL REFERENCES users(user_id),
   title        TEXT,                    -- topic/task label, editable
+  color        TEXT,                    -- optional accent color for the frame + session list, editable
   harness      TEXT NOT NULL,           -- 'claude' | 'codex' | ...
   model        TEXT NOT NULL,           -- e.g. 'opus'
   branch       TEXT NOT NULL,           -- git branch in origin.git for this session
@@ -175,7 +176,9 @@ The app ships with a web console — the desktop control surface for sessions.
     interactive terminal attached to the container (via pty over WebSocket), so you
     can send slash-commands or `$`-commands directly to the harness (e.g. codex
     control commands) and drive raw shell when needed.
-- **Frame menu actions.** Per session: rename/title, archive or delete, `/switch`
+- **Frame menu actions.** Per session: rename/title, **recolor** (pick an accent
+  color that tints the frame header and the session's list entry so fanned-out
+  frames are distinguishable at a glance), archive or delete, `/switch`
   the mobile binding to this session, pull-to-local instructions (the
   `origin.git` branch URL), and **open code** — because the repo is already cloned
   on the host, this launches an editor view (or hands off a local `code <path>`)
