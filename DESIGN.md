@@ -173,7 +173,11 @@ the target session, then:
    `origin.git`); a resume re-provisions and re-clones. Archiving a session removes
    the container for good; the branch stays.
 
-Concurrency is bounded by a semaphore sized to the box and the provider account.
+Concurrency is bounded by a semaphore sized to the box and the provider account,
+and a single turn is bounded by `FRAME_TURN_TIMEOUT_SECONDS`. The harness retries
+an unreachable provider ten times with backoff before giving up, so an unbounded
+turn would hold its slot and stream nothing; the timeout closes the stream and
+emits an `error` event instead.
 
 ## HTTP API
 
@@ -218,6 +222,7 @@ vocabulary, so a surface renders `claude` and `codex` identically:
 | `session` | `resume_id` | first event; persisted to `sessions.resume_id` |
 | `text` | `text` | assistant output delta |
 | `tool` | `name` | a tool call started |
+| `status` | `text` | liveness — requesting, provider retry |
 | `result` | `text` | turn finished |
 | `error` | `text` | turn failed |
 | `raw` | `event` | unrecognised, passed through |

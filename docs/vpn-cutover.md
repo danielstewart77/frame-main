@@ -1,7 +1,8 @@
 # VPN cutover
 
 Everything except live Azure voice and live provider inference is built and
-tested offline against fakes. On the VPN, the cutover is configuration.
+tested against fakes; container provisioning and git durability are covered by
+real-Docker integration tests. On the VPN, the cutover is configuration.
 
 ## 1. Build the sandbox image
 
@@ -9,8 +10,10 @@ tested offline against fakes. On the VPN, the cutover is configuration.
 docker build -f sandbox/Dockerfile -t frame-main-sandbox:latest .
 ```
 
-The image needs registry access for `@anthropic-ai/claude-code` and
-`@openai/codex`, which is why it is the first VPN step rather than a local one.
+Once the image exists, `tests/test_docker_integration.py` stops skipping and
+proves the real path: a pristine container clones its session branch off the
+mounted bare repo, both harness CLIs are installed, the Stop hook pushes work
+back to the host, and that work survives the container being destroyed.
 
 ## 2. Flip the provisioner
 
@@ -33,7 +36,12 @@ curl -sN -X POST localhost:8500/sessions/<session_id>/turn \
 ```
 
 A real turn should emit a `session` event carrying the harness's own id, stream
-`text`/`tool` events, and end with `result`. Then confirm the Stop hook pushed:
+`text` and `tool` events, and end with `result`. If the proxy is unreachable you
+will instead see repeated `status` events reading "retrying provider (n/10)",
+then an `error` — that pattern means the endpoint or token is wrong, not that
+the control plane is broken.
+
+Then confirm the Stop hook pushed:
 
 ```bash
 git --git-dir=users/<user_id>/origin.git branch

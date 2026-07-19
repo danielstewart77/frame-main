@@ -49,6 +49,11 @@ class Settings:
     idle_timeout_minutes: int = field(
         default_factory=lambda: int(os.getenv("FRAME_IDLE_TIMEOUT_MINUTES", "30"))
     )
+    # Ceiling on a single turn. The harness retries an unreachable provider ten
+    # times before giving up, so without this a bad endpoint wedges the frame.
+    turn_timeout_seconds: int = field(
+        default_factory=lambda: int(os.getenv("FRAME_TURN_TIMEOUT_SECONDS", "1800"))
+    )
 
     # Voice. `fake` needs no Azure reachability; `azure` is the Monday flip.
     voice: str = field(default_factory=lambda: os.getenv("FRAME_VOICE", "fake"))

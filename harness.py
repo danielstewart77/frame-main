@@ -8,6 +8,7 @@ Normalised event kinds:
   session   {'kind': 'session', 'resume_id': str}   -- first event, id to persist
   text      {'kind': 'text', 'text': str}           -- assistant output delta
   tool      {'kind': 'tool', 'name': str}           -- a tool call started
+  status    {'kind': 'status', 'text': str}         -- liveness (requesting, retrying)
   result    {'kind': 'result', 'text': str}         -- turn finished
   error     {'kind': 'error', 'text': str}
   raw       {'kind': 'raw', 'event': dict}          -- unrecognised, passed through
@@ -93,8 +94,18 @@ def parse_stream(harness: str, lines: Iterable[str]) -> Iterator[dict[str, Any]]
 def _parse_claude(event: dict[str, Any]) -> dict[str, Any]:
     kind = event.get("type")
 
-    if kind == "system" and event.get("subtype") == "init":
-        return {"kind": "session", "resume_id": event.get("session_id", "")}
+    if kind == "system":
+        subtype = event.get("subtype")
+        if subtype == "init":
+            return {"kind": "session", "resume_id": event.get("session_id", "")}
+        # A stalled provider retries silently for minutes; surface it as liveness
+        # so a frame never looks dead.
+        if subtype == "api_retry":
+            attempt = event.get("attempt", "?")
+            maximum = event.get("max_retries", "?")
+            return {"kind": "status", "text": f"retrying provider ({attempt}/{maximum})"}
+        if subtype == "status":
+            return {"kind": "status", "text": str(event.get("status", ""))}
 
     if kind == "result":
         if event.get("is_error"):

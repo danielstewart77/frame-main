@@ -86,3 +86,31 @@ def test_collect_text_falls_back_to_joined_deltas():
 def test_parse_stream_skips_blanks():
     lines = ["", json.dumps({"type": "result", "result": "ok"}), "  "]
     assert list(harness.parse_stream("claude", lines)) == [{"kind": "result", "text": "ok"}]
+
+
+def test_api_retry_becomes_a_status_event():
+    line = json.dumps(
+        {"type": "system", "subtype": "api_retry", "attempt": 3, "max_retries": 10}
+    )
+    assert harness.parse_line("claude", line) == {
+        "kind": "status",
+        "text": "retrying provider (3/10)",
+    }
+
+
+def test_system_status_becomes_a_status_event():
+    line = json.dumps({"type": "system", "subtype": "status", "status": "requesting"})
+    assert harness.parse_line("claude", line) == {"kind": "status", "text": "requesting"}
+
+
+def test_status_events_do_not_pollute_collected_text():
+    events = [
+        {"kind": "status", "text": "requesting"},
+        {"kind": "text", "text": "answer"},
+    ]
+    assert harness.collect_text(events) == "answer"
+
+
+def test_unknown_system_subtype_still_passes_through_as_raw():
+    line = json.dumps({"type": "system", "subtype": "compact_boundary"})
+    assert harness.parse_line("claude", line)["kind"] == "raw"

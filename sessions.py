@@ -133,15 +133,31 @@ class SessionManager:
         return "\n\n".join(blocks)
 
     async def turn(self, session_id: str, prompt: str) -> AsyncIterator[dict[str, Any]]:
-        """Run one turn, streaming normalised events and persisting `resume_id`."""
+        """Run one turn, streaming normalised events and persisting `resume_id`.
+
+        Bounded by `turn_timeout_seconds` — an unreachable provider otherwise
+        keeps the harness retrying and the frame streaming nothing.
+        """
         session = await self.ensure_running(session_id)
+        timeout = self.settings.turn_timeout_seconds
         async with self.semaphore:
-            async for event in self.provisioner.run_turn(
-                session, prompt, self.system_prompt(session)
-            ):
-                if event["kind"] == "session" and event.get("resume_id"):
-                    self.registry.update_session(session_id, resume_id=event["resume_id"])
-                yield event
+            stream = self.provisioner.run_turn(session, prompt, self.system_prompt(session))
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(stream.__anext__(), timeout)
+                    except StopAsyncIteration:
+                        break
+                    if event["kind"] == "session" and event.get("resume_id"):
+                        self.registry.update_session(session_id, resume_id=event["resume_id"])
+                    yield event
+            except asyncio.TimeoutError:
+                yield {
+                    "kind": "error",
+                    "text": f"turn timed out after {timeout}s with no output",
+                }
+            finally:
+                await stream.aclose()
         self.registry.touch(session_id)
 
     async def stop(self, session_id: str) -> dict[str, Any]:
