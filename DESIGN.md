@@ -180,6 +180,38 @@ an unreachable provider ten times with backoff before giving up, so an unbounded
 turn would hold its slot and stream nothing; the timeout closes the stream and
 emits an `error` event instead.
 
+### Harness process model: per-turn batch vs. interactive — undecided
+
+`claude -p --output-format stream-json` (above) spawns the harness fresh per turn
+boundary rather than running it as a standing interactive process. This is a real
+tradeoff, not just an implementation detail, and frame-main hasn't settled it yet:
+
+- **Per-turn batch (current).** Each turn is a discrete process invocation with a
+  clean stream-json contract the control plane already normalises (`session`,
+  `text`, `tool`, `status`, `result`, `error` above). Small, boundable attack
+  surface — no standing control channel, nothing to reach between turns.
+  Confirmed failure mode (found debugging the same issue on Skippy, the sibling
+  bare-metal mind): a background Task-tool subagent's completion is documented as
+  arriving "in a later turn" — there is no push between turns. If a surface needs
+  to hear about that completion before the user's next message, it doesn't, until
+  something else opens a new turn. `--forward-subagent-text` narrows this for a
+  subagent's own streamed text but does not fix top-level unsolicited output.
+- **Fully interactive.** A persistent harness process (no `-p`, or driven via
+  `--remote-control`) could push output the moment it exists — no next-turn delay
+  for background work. Costs: loses the clean stream-json event contract this doc
+  builds the whole surface-normalisation table on (interactive mode renders a
+  terminal UI, not structured events, unless `--remote-control` exposes something
+  equivalent — unverified); a standing control channel per session is a materially
+  larger attack surface than a subprocess that spawns, answers, and dies; session
+  isolation gets fuzzier once the process isn't naturally bounded by turn
+  start/end.
+
+Revisit when a concrete feature needs it — e.g. a long-running Task-tool call that
+should stream progress into `/sessions/{id}/stream` before the user prompts again.
+Until then, per-turn batch stays the default — it's the smaller, easier-to-reason
+-about surface, consistent with "wrap, don't rebuild" and "control plane owns
+Docker; the agent never does" above.
+
 ## HTTP API
 
 Every surface — web console, Telegram bot, curl — speaks only this contract.
