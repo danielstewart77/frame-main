@@ -188,7 +188,8 @@ session's life rather than respawned per turn:
 ```
 claude -p --input-format stream-json --output-format stream-json \
        --include-partial-messages \
-       --channels plugin:frame@frame-marketplace \
+       --mcp-config /opt/frame/mcp.json \
+       --dangerously-load-development-channels server:frame \
        [--resume <resume_id>] \
        --append-system-prompt "<identity + memory blocks>"
 ```
@@ -207,12 +208,20 @@ subagent finishing still surfaces only when the next turn opens. **Channels**
 close that gap. A channel is an MCP server that Claude Code spawns over stdio and
 that pushes `notifications/claude/channel` events into the *already-running*
 session; each arrives in context as a `<channel source="…">` tag and opens a turn.
-frame-main ships its own channel server inside the session container, which gives
-the control plane three things a per-turn batch process cannot have:
+
+Because the harness spawns it over stdio, a channel cannot be a remotely-hosted
+server — but it doesn't need to hold any logic. `sandbox/channel.py` is a relay:
+it long-polls `/sessions/{id}/channel/events` on the control plane and emits each
+event as a channel notification, and its `reply` tool POSTs to
+`/sessions/{id}/channel/reply`. Sender allowlisting, surface fan-out and routing
+stay in the control plane, the only component that knows about users. The shim is
+registered from `/opt/frame/mcp.json`, outside `/workspace/repo` so the session's
+own git history stays clean. This gives the control plane three things a per-turn
+batch process cannot have:
 
 - **Inbound wake.** Anything — a finished background job, a CI webhook, a
-  scheduler, a Telegram message — POSTs to the channel server on container
-  loopback and the session reacts without waiting for the user.
+  scheduler, a Telegram message — queues an event on the control plane, and the
+  session reacts without waiting for the user.
 - **Outbound reply.** The channel exposes a `reply` tool, so the agent routes
   messages back to the originating surface mid-turn rather than only in its
   final result.

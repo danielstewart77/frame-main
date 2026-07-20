@@ -19,6 +19,27 @@ def test_claude_argv_resumes_and_appends_system_prompt():
     assert argv[argv.index("--append-system-prompt") + 1] == "be brief"
 
 
+def test_claude_argv_omits_channel_flags_without_a_config():
+    argv = harness.build_argv("claude", "go", "opus")
+    assert "--mcp-config" not in argv
+    assert "--dangerously-load-development-channels" not in argv
+
+
+def test_claude_argv_registers_the_frame_channel():
+    argv = harness.build_argv("claude", "go", "opus", channel_config="/opt/frame/mcp.json")
+    assert argv[argv.index("--mcp-config") + 1] == "/opt/frame/mcp.json"
+    # Channels are a research preview: an unlisted server needs the dev flag.
+    flag = argv.index("--dangerously-load-development-channels")
+    assert argv[flag + 1] == f"server:{harness.CHANNEL_SERVER_NAME}"
+
+
+def test_codex_argv_ignores_channel_config():
+    # Codex has no channel equivalent; passing one must not corrupt its argv.
+    argv = harness.build_argv("codex", "go", "gpt-5", channel_config="/opt/frame/mcp.json")
+    assert "--mcp-config" not in argv
+    assert argv[-1] == "go"
+
+
 def test_codex_argv_is_json_and_ends_with_the_prompt():
     argv = harness.build_argv("codex", "go", "gpt-5")
     assert argv[:2] == ["codex", "exec"]
