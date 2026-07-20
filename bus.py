@@ -23,8 +23,9 @@ a reconnect that comes back whole.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import deque
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 # One slow subscriber shouldn't stall the others or grow without bound; past this
 # it is disconnected and expected to reconnect with the `seq` it got to.
@@ -96,6 +97,10 @@ class SessionBus:
         self._history: deque[dict[str, Any]] = deque(maxlen=replay_max)
         self._seq = 0
         self.closed = False
+        # Called with every stamped event, for anyone who needs the stream to
+        # outlive this process. Set by `SessionStreams`; None keeps the bus
+        # standalone and testable.
+        self.on_publish: Callable[[dict[str, Any]], None] | None = None
 
     @property
     def subscriber_count(self) -> int:
@@ -142,6 +147,12 @@ class SessionBus:
         self._seq += 1
         stamped = {**event, "seq": self._seq}
         self._history.append(stamped)
+        if self.on_publish is not None:
+            # A sink that fails must not cost a live surface its event.
+            try:
+                self.on_publish(stamped)
+            except Exception:  # pragma: no cover - defensive
+                logging.getLogger(__name__).exception("event sink failed")
         for subscription in list(self._subscribers):
             subscription._put(stamped)
         return stamped
@@ -196,11 +207,18 @@ class SessionStreams:
     def __init__(self) -> None:
         self._buses: dict[str, SessionBus] = {}
         self._channels: dict[str, ChannelQueue] = {}
+        # Set by the session manager to persist what goes past. Wired onto each
+        # bus as it is created, so it catches events published straight to a bus
+        # as well as those going through `publish` here.
+        self.on_publish: Callable[[str, dict[str, Any]], None] | None = None
 
     def bus(self, session_id: str) -> SessionBus:
         bus = self._buses.get(session_id)
         if bus is None or bus.closed:
             bus = SessionBus()
+            if self.on_publish is not None:
+                sink = self.on_publish
+                bus.on_publish = lambda event: sink(session_id, event)
             self._buses[session_id] = bus
         return bus
 

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   resume_id    TEXT,                    -- harness --resume id (null until first turn)
   transcript   TEXT,                    -- path to harness rollout jsonl (host-mounted)
   status       TEXT NOT NULL DEFAULT 'active',  -- active | done | archived
+  outcome      TEXT,                    -- null while working; ok | error once a turn lands
   frame_state  TEXT NOT NULL DEFAULT 'closed',  -- closed | docked | minimized
   speaker      INTEGER NOT NULL DEFAULT 0,      -- per-frame spoken playback toggle
   created_at   TEXT NOT NULL,
@@ -38,6 +39,23 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions(user_id, status, last_active);
+
+-- What a session actually said, durable past the process that heard it.
+-- The bus fans events out live to whoever is attached, but nobody is attached
+-- to a session running unattended, and its replay buffer is a bounded deque in
+-- memory. This table is the record you read in the morning.
+--
+-- Text deltas are coalesced into one row per contiguous run: the harness emits
+-- a token at a time, and a row per token would be a row per token.
+CREATE TABLE IF NOT EXISTS session_events (
+  session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  seq         INTEGER NOT NULL,        -- bus seq; ordering within the session
+  kind        TEXT NOT NULL,           -- text | tool | status | result | error | ...
+  text        TEXT,                    -- the human-readable payload, when there is one
+  data        TEXT,                    -- json: everything else on the event
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
 
 -- a surface's "current" session is just a repointable pointer
 CREATE TABLE IF NOT EXISTS surface_bindings (

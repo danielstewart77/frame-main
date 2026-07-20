@@ -243,6 +243,27 @@ Gate inbound events on **sender identity** before emitting a notification — an
 ungated channel is a prompt-injection path straight into the session's context,
 and a session running with approvals off will act on whatever lands there.
 
+### The transcript outlives the process
+
+A session's events go to its bus, which fans them out to whoever is attached and
+keeps a bounded in-memory tail for reconnects. For a session running unattended
+that is nobody, and the tail dies with the process — so every event is also
+written to `session_events` as it is published.
+
+Text is coalesced: the harness emits a token at a time and a row per token would
+be a row per token, so a contiguous run of `text` becomes one row stamped with
+the `seq` of its first event. Transcript order and bus order therefore agree, and
+`GET /sessions/{id}/events` pages by `seq` the same way a reconnecting surface
+does. The write is idempotent on `(session_id, seq)`, and a sink that throws is
+logged rather than raised — persistence failing must not cost a live surface its
+event.
+
+`sessions.outcome` is nulled when a turn starts and set to `ok` or `error` when
+one lands, so a list of twelve sessions can show which finished, which failed,
+and which are still going without opening any of them. The transcript survives
+archiving, because reading back a finished session is the entire point of it, and
+is deleted only with the session itself.
+
 ### Sessions run unattended
 
 Both harnesses spawn with approvals off: `--dangerously-skip-permissions` for
@@ -316,6 +337,7 @@ POST   /sessions/{id}/interrupt                 cut an in-flight turn short
 POST   /sessions/{id}/start                     provision the container
 POST   /sessions/{id}/stop                      stop it; state lives in origin.git
 POST   /sessions/{id}/archive                   remove the container, keep the branch
+GET    /sessions/{id}/events?after_seq=&limit=   the persisted transcript, read after the fact
 GET    /sessions/{id}/diff
 GET    /sessions/{id}/clone-url
 ANY    /sessions/{id}/app/{path}               browser pane: reverse proxy to app_port
