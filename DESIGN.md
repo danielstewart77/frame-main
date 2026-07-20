@@ -232,6 +232,19 @@ batch process cannot have:
   containerised session approvable without falling back to
   `--dangerously-skip-permissions`.
 
+  `permissions.py` holds the control-plane half. The shim's
+  `POST /sessions/{id}/channel/permission` blocks until a surface answers,
+  because the harness is blocked on its end regardless — so the exchange stays
+  in one request, with no queue to reconcile and no way for a verdict to be
+  minted for a prompt that has already gone away. The prompt goes out on the
+  session bus as a `permission` event and the answer comes back on
+  `POST /sessions/{id}/permissions/{request_id}`; the verdict is then published
+  as `permission_resolved` so every *other* watching surface clears its prompt
+  rather than leaving a dead button on screen. A prompt nobody answers denies
+  itself when the wait runs out — silence is not consent. Request ids are five
+  letters from an alphabet with no `l`, `I` or `O`, because a person reads one
+  off a screen and types it back.
+
 `sandbox/harness_process.py` holds that process: one `docker exec -i` per
 session, prompts written to stdin as stream-json, one reader task over stdout.
 Turns are serialised — the harness runs one at a time, so a second prompt written
@@ -294,6 +307,9 @@ WS     /sessions/{id}/stream?since=<seq>        subscribe to everything the sess
 POST   /sessions/{id}/channel/deliver           {content, meta?} inbound wake -> {queued}
 GET    /sessions/{id}/channel/events?timeout=   shim long poll -> {events}
 POST   /sessions/{id}/channel/reply             {chat_id, text} agent reply out
+POST   /sessions/{id}/channel/permission        {tool, input?, timeout?} blocks -> {request_id, allow}
+GET    /sessions/{id}/permissions               prompts still open
+POST   /sessions/{id}/permissions/{request_id}  {allow, reason?} a surface's verdict
 POST   /sessions/{id}/interrupt                 cut an in-flight turn short
 POST   /sessions/{id}/start                     provision the container
 POST   /sessions/{id}/stop                      stop it; state lives in origin.git
@@ -328,6 +344,8 @@ vocabulary, so a surface renders `claude` and `codex` identically:
 | `result` | `text` | turn finished |
 | `error` | `text` | turn failed |
 | `reply` | `chat_id`, `text` | agent routed a message out through its channel |
+| `permission` | `request_id`, `tool`, `input` | a tool call is waiting on approval |
+| `permission_resolved` | `request_id`, `allow`, `reason` | it was answered, or timed out |
 | `gap` | `from_seq`, `to_seq` | events in that range aged out before reconnect |
 | `raw` | `event` | unrecognised, passed through |
 
