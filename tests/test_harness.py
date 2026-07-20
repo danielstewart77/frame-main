@@ -33,6 +33,43 @@ def test_claude_argv_registers_the_frame_channel():
     assert argv[flag + 1] == f"server:{harness.CHANNEL_SERVER_NAME}"
 
 
+def test_claude_argv_without_a_prompt_reads_turns_off_stdin():
+    argv = harness.build_argv("claude", None, "opus")
+    assert argv[:2] == ["claude", "-p"]
+    assert argv[argv.index("--input-format") + 1] == "stream-json"
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+
+
+def test_only_claude_is_stdin_driven():
+    assert harness.supports_stdin("claude")
+    assert not harness.supports_stdin("codex")
+
+
+def test_codex_has_no_stdin_form():
+    with pytest.raises(harness.UnknownHarness):
+        harness.build_argv("codex", None, "gpt-5")
+
+
+def test_encode_turn_is_one_stream_json_user_message():
+    line = harness.encode_turn("claude", "do the thing")
+    assert line.endswith("\n")
+    message = json.loads(line)
+    assert message["type"] == "user"
+    assert message["message"]["content"] == [{"type": "text", "text": "do the thing"}]
+
+
+def test_encode_interrupt_is_a_control_request():
+    message = json.loads(harness.encode_interrupt("claude", "int-1"))
+    assert message["type"] == "control_request"
+    assert message["request_id"] == "int-1"
+    assert message["request"]["subtype"] == "interrupt"
+
+
+def test_encoding_for_a_one_shot_harness_is_refused():
+    with pytest.raises(harness.UnknownHarness):
+        harness.encode_turn("codex", "go")
+
+
 def test_codex_argv_ignores_channel_config():
     # Codex has no channel equivalent; passing one must not corrupt its argv.
     argv = harness.build_argv("codex", "go", "gpt-5", channel_config="/opt/frame/mcp.json")

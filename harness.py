@@ -32,15 +32,29 @@ class UnknownHarness(ValueError):
     pass
 
 
+def supports_stdin(harness: str) -> bool:
+    """Whether the harness can be driven as one long-lived stdin-fed process.
+
+    Claude reads turns off stdin as stream-json and stays up between them, which
+    is what a channel needs: a session that is already running when an event
+    arrives. `codex exec` is one-shot, so it stays on the per-turn path.
+    """
+    return harness == CLAUDE
+
+
 def build_argv(
     harness: str,
-    prompt: str,
+    prompt: str | None,
     model: str,
     resume_id: str | None = None,
     system_prompt: str = "",
     channel_config: str | None = None,
 ) -> list[str]:
     """The exact command the container entrypoint execs.
+
+    A `prompt` of `None` builds the persistent form: the harness takes its turns
+    off stdin as stream-json instead of carrying one on the command line, and
+    stays up between them.
 
     `channel_config` is the path to the MCP config declaring the frame channel.
     Passing it registers the channel so the control plane can push events into a
@@ -49,10 +63,12 @@ def build_argv(
     plugins register without it.
     """
     if harness == CLAUDE:
-        argv = [
-            "claude",
-            "-p",
-            prompt,
+        argv = ["claude", "-p"]
+        if prompt is not None:
+            argv.append(prompt)
+        else:
+            argv += ["--input-format", "stream-json"]
+        argv += [
             "--output-format",
             "stream-json",
             "--include-partial-messages",
@@ -74,6 +90,8 @@ def build_argv(
         return argv
 
     if harness == CODEX:
+        if prompt is None:
+            raise UnknownHarness("codex has no stdin-driven form")
         argv = ["codex", "exec", "--json", "--model", model]
         if resume_id:
             argv += ["resume", resume_id]
@@ -83,6 +101,33 @@ def build_argv(
         return argv
 
     raise UnknownHarness(f"unsupported harness: {harness!r}")
+
+
+def encode_turn(harness: str, prompt: str) -> str:
+    """One prompt as a line for a stdin-driven harness."""
+    if harness != CLAUDE:
+        raise UnknownHarness(f"{harness!r} is not stdin-driven")
+    message = {
+        "type": "user",
+        "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
+    }
+    return json.dumps(message) + "\n"
+
+
+def encode_interrupt(harness: str, request_id: str) -> str:
+    """Cut the in-flight turn short without ending the process.
+
+    Signalling the process would take the session's context down with it, which
+    is the whole thing the persistent form exists to keep.
+    """
+    if harness != CLAUDE:
+        raise UnknownHarness(f"{harness!r} is not stdin-driven")
+    message = {
+        "type": "control_request",
+        "request_id": request_id,
+        "request": {"subtype": "interrupt"},
+    }
+    return json.dumps(message) + "\n"
 
 
 def parse_line(harness: str, line: str) -> dict[str, Any] | None:
