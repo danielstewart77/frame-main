@@ -23,6 +23,46 @@ html, body {
 
 button, input, select, textarea { font: inherit; color: inherit; }
 
+[hidden] { display: none !important; }
+
+/* --- login gate --------------------------------------------------------- */
+
+.login {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  background: var(--bg);
+}
+.login-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(300px, 82vw);
+  padding: 28px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.login-title {
+  margin: 0 0 4px;
+  font-size: 20px;
+  letter-spacing: 0.12em;
+  text-align: center;
+  color: var(--accent);
+}
+.login-card input {
+  padding: 9px 11px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.login-card input:focus { outline: 1px solid var(--accent); }
+.login-error {
+  margin: 0;
+  color: var(--danger);
+  text-align: center;
+}
+
 .app {
   display: grid;
   grid-template-columns: 260px 1fr;

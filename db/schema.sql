@@ -9,6 +9,28 @@ CREATE TABLE IF NOT EXISTS users (
   status       TEXT NOT NULL DEFAULT 'active'
 );
 
+-- How a user proves who they are at the console. Separate from `users` on
+-- purpose: a user reached only through a surface (a Telegram chat) has an
+-- identity row and no credential, and that is a complete account.
+CREATE TABLE IF NOT EXISTS credentials (
+  user_id       TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+  username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT NOT NULL,        -- scrypt$n$r$p$salt$digest
+  created_at    TEXT NOT NULL
+);
+
+-- Live logins. The column holds sha256(token), never the token, so a readable
+-- database is not a set of working credentials.
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  token_hash TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  last_used  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS auth_tokens_by_user ON auth_tokens(user_id);
+
 -- surface identity -> user (a Telegram chat, a web login, etc.)
 CREATE TABLE IF NOT EXISTS identities (
   surface      TEXT NOT NULL,           -- 'telegram' | 'web'
@@ -55,6 +77,15 @@ CREATE TABLE IF NOT EXISTS session_events (
   data        TEXT,                    -- json: everything else on the event
   created_at  TEXT NOT NULL,
   PRIMARY KEY (session_id, seq)
+);
+
+-- The bearer the container's channel shim presents, one per session. Kept off
+-- the sessions row so it never rides out in a `GET /sessions/{id}` response —
+-- the token is a capability, and a session's own metadata is not the place for
+-- it. sha256, like every other stored token.
+CREATE TABLE IF NOT EXISTS session_tokens (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE
 );
 
 -- a surface's "current" session is just a repointable pointer

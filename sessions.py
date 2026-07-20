@@ -106,7 +106,10 @@ class SessionManager:
         app_port = session["app_port"] or allocate_port(
             self.registry.used_app_ports(), self.settings.app_port_range
         )
-        env = self._spawn_env(session, workspace)
+        # A fresh channel bearer per container: the shim can call back for this
+        # session and no other, and the previous container's token is now dead.
+        channel_token = self.registry.rotate_channel_token(session_id)
+        env = self._spawn_env(session, workspace, channel_token)
         if app_port:
             env["_app_port"] = str(app_port)
 
@@ -119,7 +122,9 @@ class SessionManager:
             app_port=container.app_port,
         )
 
-    def _spawn_env(self, session: dict[str, Any], workspace: Workspace) -> dict[str, str]:
+    def _spawn_env(
+        self, session: dict[str, Any], workspace: Workspace, channel_token: str
+    ) -> dict[str, str]:
         """Per-container env — creds are injected at spawn time, never baked in."""
         env = {
             "FRAME_USER_ID": session["user_id"],
@@ -128,11 +133,11 @@ class SessionManager:
             "FRAME_HARNESS": session["harness"],
             "FRAME_MODEL": session["model"],
             "GIT_ORIGIN": "/origin.git",
-            # Where the channel shim calls back to reach the control plane.
+            # Where the channel shim calls back to reach the control plane, and
+            # the bearer that scopes it to this one session.
             "FRAME_CHANNEL_URL": self.settings.channel_url,
+            "FRAME_CHANNEL_TOKEN": channel_token,
         }
-        if self.settings.channel_token:
-            env["FRAME_CHANNEL_TOKEN"] = self.settings.channel_token
         if self.settings.anthropic_base_url:
             env["ANTHROPIC_BASE_URL"] = self.settings.anthropic_base_url
         if self.settings.anthropic_auth_token:

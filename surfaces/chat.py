@@ -89,11 +89,18 @@ class LocalClient:
 
 
 class HttpClient:
-    """Backed by the agent-server HTTP API — for a bot in its own process."""
+    """Backed by the agent-server HTTP API — for a bot in its own process.
 
-    def __init__(self, base_url: str, timeout: float = 30.0):
+    A surface is a service principal: it carries `FRAME_SERVICE_TOKEN` on every
+    request and thereby acts for whichever user a chat identity resolves to.
+    Without the token the control plane answers 401 and the bot is inert, which
+    is the intended failure — a surface with no credential should do nothing.
+    """
+
+    def __init__(self, base_url: str, timeout: float = 30.0, service_token: str = ""):
         self.base_url = base_url.rstrip("/")
-        self.http = httpx.Client(base_url=self.base_url, timeout=timeout)
+        headers = {"Authorization": f"Bearer {service_token}"} if service_token else {}
+        self.http = httpx.Client(base_url=self.base_url, timeout=timeout, headers=headers)
 
     def resolve_user(self, surface, external_id, display_name=None):
         response = self.http.post(

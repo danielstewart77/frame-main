@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import uuid
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -30,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.websockets import WebSocketDisconnect
 
+import auth as auth_mod
 import harness as harness_mod
 import proxy as proxy_mod
 import registry as registry_mod
@@ -40,7 +40,7 @@ from sessions import SessionError, SessionManager, UnknownSession
 
 SURFACES = {"telegram", "web"}
 CONSOLE_DIR = Path(__file__).resolve().parent / "console"
-CONSOLE_COOKIE = "frame_console_id"
+AUTH_COOKIE = "frame_auth"
 
 
 # --- request bodies ---------------------------------------------------------
@@ -48,6 +48,17 @@ CONSOLE_COOKIE = "frame_console_id"
 
 class UserCreate(BaseModel):
     display_name: str
+
+
+class Register(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=8)
+    display_name: str | None = None
+
+
+class Login(BaseModel):
+    username: str
+    password: str
 
 
 class IdentityLink(BaseModel):
@@ -116,6 +127,9 @@ async def _reap_loop(app: FastAPI) -> None:
         await asyncio.sleep(interval)
         try:
             await manager.reap_idle()
+            # Same timer clears out login tokens that have aged past their TTL,
+            # so the table does not grow without bound over a long-lived process.
+            manager.registry.purge_expired_tokens()
         except Exception:  # pragma: no cover - defensive, logged not raised
             logging.getLogger(__name__).exception("idle reap failed")
 
@@ -159,6 +173,167 @@ def create_app(
     def get_manager(request: Request) -> SessionManager:
         return request.app.state.manager
 
+    # --- authentication ----------------------------------------------------
+
+    def _identify(token: str | None) -> auth_mod.Principal | None:
+        """Resolve a bearer token to whoever holds it, or None."""
+        if not token:
+            return None
+        if settings.service_token and auth_mod.tokens_match(token, settings.service_token):
+            return auth_mod.Principal(auth_mod.SERVICE)
+        user_id = registry.user_for_token(auth_mod.token_digest(token))
+        return auth_mod.Principal(auth_mod.USER, user_id) if user_id else None
+
+    def _presented(headers: Any, cookies: dict[str, str]) -> str | None:
+        """A token from the Authorization header, else the console's cookie.
+
+        The cookie exists because a browser cannot attach a header to a
+        WebSocket handshake or an <img> load; it is `httponly` and `samesite`
+        so it is not readable by script and does not ride a cross-site form.
+        """
+        return auth_mod.bearer(headers.get("authorization")) or cookies.get(AUTH_COOKIE)
+
+    def principal(request: Request) -> auth_mod.Principal:
+        who = _identify(_presented(request.headers, request.cookies))
+        if not who:
+            raise HTTPException(
+                401, "authentication required", headers={"WWW-Authenticate": "Bearer"}
+            )
+        return who
+
+    def service_only(who: auth_mod.Principal = Depends(principal)) -> auth_mod.Principal:
+        """Fleet-wide routes: minting users, resolving a chat to an account.
+
+        A logged-in user must not be able to do these — they are the surface
+        processes' job, and the surface holds the service token.
+        """
+        if not who.is_service:
+            raise HTTPException(403, "service credentials required")
+        return who
+
+    def socket_principal(websocket: WebSocket) -> auth_mod.Principal | None:
+        token = auth_mod.bearer(
+            websocket.headers.get("authorization")
+        ) or websocket.cookies.get(AUTH_COOKIE) or websocket.query_params.get("token")
+        return _identify(token)
+
+    def owned(
+        manager: SessionManager, who: auth_mod.Principal, session_id: str
+    ) -> dict[str, Any]:
+        """Resolve a session the caller is entitled to.
+
+        A session belonging to someone else answers 404, not 403: confirming
+        that an id exists is itself a leak across accounts.
+        """
+        session = _resolve(manager, session_id)
+        if not who.owns(session["user_id"]):
+            raise HTTPException(404, f"no such session: {session_id}")
+        return session
+
+    def owned_surface(who: auth_mod.Principal, surface: str, external_id: str) -> None:
+        """A surface binding belongs to the account that identity maps to.
+
+        The web console keys its surface on the user's own id (see
+        `console_bootstrap`), so a user always owns `web/<their user_id>`; every
+        other surface is owned via the identity row that maps it to an account.
+        """
+        _check_surface(surface)
+        if who.is_service or external_id == who.user_id:
+            return
+        if registry.resolve_identity(surface, external_id) != who.user_id:
+            raise HTTPException(403, "not your surface")
+
+    def _own_user(who: auth_mod.Principal, user_id: str) -> None:
+        if not who.owns(user_id):
+            raise HTTPException(403, "not your account")
+
+    def channel_caller(session_id: str, request: Request) -> None:
+        """Authorize a call from a container's channel shim.
+
+        The shim holds a bearer minted for one session; it may touch that
+        session's channel and nothing else. A bad or mismatched token is a 401,
+        never a 404, because the shim is not browsing for ids — it either has
+        its own capability or it does not.
+        """
+        token = auth_mod.bearer(request.headers.get("authorization"))
+        if not token or registry.session_for_channel_token(token) != session_id:
+            raise HTTPException(
+                401, "invalid channel token", headers={"WWW-Authenticate": "Bearer"}
+            )
+
+    @app.post("/auth/register", status_code=201)
+    def register(request: Request, body: Register) -> dict[str, Any]:
+        """Create an account with a console login.
+
+        Open only while no account exists, so a fresh box can be claimed by the
+        operator standing in front of it. After that it takes the service token,
+        which is the same authority that runs the surfaces.
+        """
+        if registry.count_credentials():
+            who = _identify(_presented(request.headers, request.cookies))
+            if not who or not who.is_service:
+                raise HTTPException(403, "registration is closed; use the service token")
+        username = body.username.strip()
+        if not username:
+            raise HTTPException(400, "username must not be blank")
+        if registry.credential_by_username(username):
+            raise HTTPException(409, "username taken")
+        user = registry.create_user(body.display_name or username)
+        registry.set_credential(
+            user["user_id"], username, auth_mod.hash_password(body.password)
+        )
+        manager.workspace(user["user_id"]).ensure()
+        return {"user_id": user["user_id"], "username": username,
+                "display_name": user["display_name"]}
+
+    @app.post("/auth/login")
+    def login(body: Login, response: Response) -> dict[str, Any]:
+        credential = registry.credential_by_username(body.username.strip())
+        # Hash-compare even on a miss, so a wrong username and a wrong password
+        # take the same time and the endpoint is not a username oracle.
+        stored = credential["password_hash"] if credential else auth_mod.hash_password("_")
+        if not auth_mod.verify_password(body.password, stored) or not credential:
+            raise HTTPException(401, "bad username or password")
+        token = auth_mod.new_token()
+        issued = registry.store_token(
+            auth_mod.token_digest(token), credential["user_id"], settings.auth_token_ttl_hours
+        )
+        response.set_cookie(
+            AUTH_COOKIE,
+            token,
+            max_age=settings.auth_token_ttl_hours * 3600,
+            httponly=True,
+            samesite="lax",
+        )
+        return {
+            "token": token,
+            "user_id": credential["user_id"],
+            "username": credential["username"],
+            "expires_at": issued["expires_at"],
+        }
+
+    @app.post("/auth/logout", status_code=204)
+    def logout(request: Request, response: Response) -> Response:
+        token = _presented(request.headers, request.cookies)
+        if token:
+            registry.delete_token(auth_mod.token_digest(token))
+        response = Response(status_code=204)
+        response.delete_cookie(AUTH_COOKIE)
+        return response
+
+    @app.get("/auth/me")
+    def whoami(who: auth_mod.Principal = Depends(principal)) -> dict[str, Any]:
+        if who.is_service:
+            return {"kind": auth_mod.SERVICE, "user_id": None, "username": None}
+        user = registry.get_user(who.user_id) or {}
+        credential = registry.credential_for(who.user_id) or {}
+        return {
+            "kind": auth_mod.USER,
+            "user_id": who.user_id,
+            "username": credential.get("username"),
+            "display_name": user.get("display_name"),
+        }
+
     # --- health ------------------------------------------------------------
 
     @app.get("/health")
@@ -173,16 +348,20 @@ def create_app(
     # --- users + identities ------------------------------------------------
 
     @app.post("/users", status_code=201)
-    def create_user(body: UserCreate) -> dict[str, Any]:
+    def create_user(
+        body: UserCreate, who: auth_mod.Principal = Depends(service_only)
+    ) -> dict[str, Any]:
         return registry.create_user(body.display_name)
 
     @app.get("/users")
-    def list_users() -> list[dict[str, Any]]:
+    def list_users(who: auth_mod.Principal = Depends(service_only)) -> list[dict[str, Any]]:
         return registry.list_users()
 
     @app.post("/identities")
     def resolve_identity(
-        body: IdentityLink, manager: SessionManager = Depends(get_manager)
+        body: IdentityLink,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(service_only),
     ) -> dict[str, Any]:
         _check_surface(body.surface)
         user_id = manager.resolve_user(body.surface, body.external_id, body.display_name)
@@ -192,8 +371,12 @@ def create_app(
 
     @app.post("/users/{user_id}/sessions", status_code=201)
     def create_session(
-        user_id: str, body: SessionCreate, manager: SessionManager = Depends(get_manager)
+        user_id: str,
+        body: SessionCreate,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
     ) -> dict[str, Any]:
+        _own_user(who, user_id)
         try:
             return manager.create(
                 user_id, body.harness, body.model, body.title, body.color
@@ -202,23 +385,38 @@ def create_app(
             raise HTTPException(404, str(exc)) from exc
 
     @app.get("/users/{user_id}/sessions")
-    def list_sessions(user_id: str, status: str = registry_mod.ACTIVE) -> list[dict[str, Any]]:
+    def list_sessions(
+        user_id: str,
+        status: str = registry_mod.ACTIVE,
+        who: auth_mod.Principal = Depends(principal),
+    ) -> list[dict[str, Any]]:
+        _own_user(who, user_id)
         return registry.list_sessions(user_id, status)
 
     @app.get("/users/{user_id}/frames")
-    def open_frames(user_id: str) -> list[dict[str, Any]]:
+    def open_frames(
+        user_id: str, who: auth_mod.Principal = Depends(principal)
+    ) -> list[dict[str, Any]]:
         """Console layout restore: which sessions are open and in what state."""
+        _own_user(who, user_id)
         return registry.open_frames(user_id)
 
     @app.get("/sessions/{session_id}")
-    def get_session(session_id: str, manager: SessionManager = Depends(get_manager)):
-        return _resolve(manager, session_id)
+    def get_session(
+        session_id: str,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
+    ):
+        return owned(manager, who, session_id)
 
     @app.patch("/sessions/{session_id}")
     def patch_session(
-        session_id: str, body: SessionPatch, manager: SessionManager = Depends(get_manager)
+        session_id: str,
+        body: SessionPatch,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
     ) -> dict[str, Any]:
-        _resolve(manager, session_id)
+        owned(manager, who, session_id)
         fields = {k: v for k, v in body.model_dump().items() if v is not None}
         if not fields:
             return manager.get(session_id)
@@ -229,9 +427,12 @@ def create_app(
 
     @app.post("/sessions/{session_id}/turn")
     async def turn(
-        session_id: str, body: TurnRequest, manager: SessionManager = Depends(get_manager)
+        session_id: str,
+        body: TurnRequest,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
     ) -> StreamingResponse:
-        _resolve(manager, session_id)
+        owned(manager, who, session_id)
 
         async def stream() -> AsyncIterator[bytes]:
             try:
@@ -256,6 +457,17 @@ def create_app(
         """
         manager: SessionManager = websocket.app.state.manager
         await websocket.accept()
+        who = socket_principal(websocket)
+        if not who:
+            await websocket.close(code=4401, reason="authentication required")
+            return
+        # A session the caller may not see is reported as absent, same as the
+        # HTTP side — the error event keeps the existing wire contract.
+        session = manager.registry.get_session(session_id)
+        if not session or not who.owns(session["user_id"]):
+            await websocket.send_json({"kind": "error", "text": f"no such session: {session_id}"})
+            await websocket.close()
+            return
         raw_since = websocket.query_params.get("since")
         try:
             since = int(raw_since) if raw_since is not None else None
@@ -291,61 +503,95 @@ def create_app(
 
     @app.get("/sessions/{session_id}/channel/events")
     async def channel_events(
-        session_id: str, timeout: float = 60.0, manager: SessionManager = Depends(get_manager)
+        session_id: str,
+        request: Request,
+        timeout: float = 60.0,
+        manager: SessionManager = Depends(get_manager),
     ):
         """Long poll drained by the container's stdio shim."""
+        channel_caller(session_id, request)
         _resolve(manager, session_id)
         return {"events": await manager.channel_events(session_id, timeout)}
 
     @app.post("/sessions/{session_id}/channel/reply")
     async def channel_reply(
-        session_id: str, body: ChannelReply, manager: SessionManager = Depends(get_manager)
+        session_id: str,
+        body: ChannelReply,
+        request: Request,
+        manager: SessionManager = Depends(get_manager),
     ):
         """A reply the agent routed back out through its channel."""
+        channel_caller(session_id, request)
         _resolve(manager, session_id)
         return manager.channel_reply(session_id, body.chat_id, body.text)
 
     @app.post("/sessions/{session_id}/channel/deliver", status_code=202)
     async def channel_deliver(
-        session_id: str, body: ChannelEvent, manager: SessionManager = Depends(get_manager)
+        session_id: str,
+        body: ChannelEvent,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
     ):
         """Push an event into a running session — the inbound wake path.
 
-        Callers are trusted by the time they reach here: this is the control
-        plane's own boundary, and the container never decides who may write.
+        This is the seam a prompt-injection payload would love, because it
+        writes straight into a session running with approvals off. So it takes
+        the same authority as the session's owner: a service surface, or the
+        user who owns it. The container never reaches this route — it drains
+        the queue, it does not fill it.
         """
-        _resolve(manager, session_id)
+        owned(manager, who, session_id)
         try:
             return manager.deliver(session_id, body.content, body.meta)
         except SessionError as exc:
             raise HTTPException(409, str(exc)) from exc
 
     @app.post("/sessions/{session_id}/interrupt")
-    async def interrupt_session(session_id: str, manager: SessionManager = Depends(get_manager)):
-        _resolve(manager, session_id)
+    async def interrupt_session(
+        session_id: str,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
+    ):
+        owned(manager, who, session_id)
         return {"interrupted": await manager.interrupt(session_id)}
 
     @app.post("/sessions/{session_id}/start")
-    async def start_session(session_id: str, manager: SessionManager = Depends(get_manager)):
-        _resolve(manager, session_id)
+    async def start_session(
+        session_id: str,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
+    ):
+        owned(manager, who, session_id)
         try:
             return await manager.ensure_running(session_id)
         except SessionError as exc:
             raise HTTPException(409, str(exc)) from exc
 
     @app.post("/sessions/{session_id}/stop")
-    async def stop_session(session_id: str, manager: SessionManager = Depends(get_manager)):
-        _resolve(manager, session_id)
+    async def stop_session(
+        session_id: str,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
+    ):
+        owned(manager, who, session_id)
         return await manager.stop(session_id)
 
     @app.post("/sessions/{session_id}/archive")
-    async def archive_session(session_id: str, manager: SessionManager = Depends(get_manager)):
-        _resolve(manager, session_id)
+    async def archive_session(
+        session_id: str,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
+    ):
+        owned(manager, who, session_id)
         return await manager.archive(session_id)
 
     @app.delete("/sessions/{session_id}", status_code=204)
-    async def delete_session(session_id: str, manager: SessionManager = Depends(get_manager)):
-        _resolve(manager, session_id)
+    async def delete_session(
+        session_id: str,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
+    ):
+        owned(manager, who, session_id)
         await manager.delete(session_id)
         return Response(status_code=204)
 
@@ -355,6 +601,7 @@ def create_app(
         after_seq: int = 0,
         limit: int = Query(default=1000, ge=1, le=5000),
         manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
     ):
         """What the session said, after the fact.
 
@@ -362,7 +609,7 @@ def create_app(
         unattended run is nobody. This reads the persisted copy, so a session
         that finished overnight can still be read in the morning.
         """
-        session = _resolve(manager, session_id)
+        session = owned(manager, who, session_id)
         # Commit any text run still open, so a read mid-turn is not missing the
         # sentence being written as it is read.
         manager.transcript.flush(session_id)
@@ -379,15 +626,23 @@ def create_app(
     # --- pull down and browse ----------------------------------------------
 
     @app.get("/sessions/{session_id}/diff")
-    def session_diff(session_id: str, manager: SessionManager = Depends(get_manager)):
-        session = _resolve(manager, session_id)
+    def session_diff(
+        session_id: str,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
+    ):
+        session = owned(manager, who, session_id)
         workspace = manager.workspace(session["user_id"])
         return {"session_id": session_id, "branch": session["branch"],
                 "diff": workspace.diff(session["branch"])}
 
     @app.get("/sessions/{session_id}/clone-url")
-    def session_clone_url(session_id: str, manager: SessionManager = Depends(get_manager)):
-        session = _resolve(manager, session_id)
+    def session_clone_url(
+        session_id: str,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
+    ):
+        session = owned(manager, who, session_id)
         workspace = manager.workspace(session["user_id"])
         return {
             "clone_url": workspace.clone_url(),
@@ -398,32 +653,32 @@ def create_app(
     # --- the web console -----------------------------------------------------
 
     @app.get("/console")
-    def console_page(request: Request) -> Response:
-        """The console shell. Issues the surface identity cookie on first visit."""
-        response = FileResponse(CONSOLE_DIR / "index.html")
-        if not request.cookies.get(CONSOLE_COOKIE):
-            response.set_cookie(
-                CONSOLE_COOKIE,
-                uuid.uuid4().hex,
-                max_age=60 * 60 * 24 * 365,
-                httponly=True,
-                samesite="lax",
-            )
-        return response
+    def console_page() -> Response:
+        """The console shell. Public: the page itself is just the login form
+        until a token is in hand. Everything it then fetches is authenticated."""
+        return FileResponse(CONSOLE_DIR / "index.html")
 
     @app.get("/console/bootstrap")
     def console_bootstrap(
-        request: Request, manager: SessionManager = Depends(get_manager)
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
     ) -> dict[str, Any]:
-        """Everything the console needs to restore itself: identity + layout."""
-        external_id = request.cookies.get(CONSOLE_COOKIE)
-        if not external_id:
-            raise HTTPException(400, "no console identity cookie; reload /console")
-        user_id = manager.resolve_user("web", external_id, "console")
+        """Everything the console needs to restore itself: identity + layout.
+
+        Keyed to the logged-in user, not an anonymous cookie: the web surface's
+        `external_id` is the user's own id, so layout and bindings follow the
+        account across browsers rather than living on one device's cookie.
+        """
+        if who.is_service:
+            raise HTTPException(403, "console is for user logins, not the service token")
+        user_id = who.user_id
+        manager.workspace(user_id).ensure()
+        credential = registry.credential_for(user_id) or {}
         return {
             "user_id": user_id,
-            "external_id": external_id,
-            "sidebar_collapsed": registry.sidebar_collapsed("web", external_id),
+            "external_id": user_id,
+            "username": credential.get("username"),
+            "sidebar_collapsed": registry.sidebar_collapsed("web", user_id),
             "frames": registry.open_frames(user_id),
             "harnesses": [harness_mod.CLAUDE, harness_mod.CODEX],
             "default_harness": settings.default_harness,
@@ -441,9 +696,10 @@ def create_app(
         path: str,
         request: Request,
         manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
     ) -> Response:
         """Browser pane: the session's own app, reverse-proxied off its app_port."""
-        _resolve(manager, session_id)
+        owned(manager, who, session_id)
         try:
             port = await manager.app_port(session_id)
         except SessionError as exc:
@@ -473,10 +729,17 @@ def create_app(
         """
         manager: SessionManager = websocket.app.state.manager
         await websocket.accept()
+        who = socket_principal(websocket)
+        if not who:
+            await websocket.close(code=4401, reason="authentication required")
+            return
         try:
-            manager.get(session_id)
+            session = manager.get(session_id)
         except UnknownSession as exc:
             await websocket.close(code=4404, reason=str(exc))
+            return
+        if not who.owns(session["user_id"]):
+            await websocket.close(code=4404, reason="no such session")
             return
         try:
             tty = await manager.attach_tty(session_id)
@@ -517,40 +780,62 @@ def create_app(
         external_id: str,
         body: AttachRequest,
         manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
     ):
-        _check_surface(surface)
-        _resolve(manager, body.session_id)
+        owned_surface(who, surface, external_id)
+        owned(manager, who, body.session_id)
         return manager.attach(surface, external_id, body.session_id)
 
     @app.get("/surfaces/{surface}/{external_id}/attach")
-    def attached(surface: str, external_id: str, manager: SessionManager = Depends(get_manager)):
-        _check_surface(surface)
+    def attached(
+        surface: str,
+        external_id: str,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
+    ):
+        owned_surface(who, surface, external_id)
         session = manager.attached(surface, external_id)
         if not session:
             raise HTTPException(404, "no session attached")
         return session
 
     @app.delete("/surfaces/{surface}/{external_id}/attach", status_code=204)
-    def detach(surface: str, external_id: str, manager: SessionManager = Depends(get_manager)):
-        _check_surface(surface)
+    def detach(
+        surface: str,
+        external_id: str,
+        manager: SessionManager = Depends(get_manager),
+        who: auth_mod.Principal = Depends(principal),
+    ):
+        owned_surface(who, surface, external_id)
         manager.detach(surface, external_id)
         return Response(status_code=204)
 
     @app.get("/surfaces/{surface}/{external_id}/layout")
-    def get_layout(surface: str, external_id: str):
-        _check_surface(surface)
+    def get_layout(
+        surface: str, external_id: str, who: auth_mod.Principal = Depends(principal)
+    ):
+        owned_surface(who, surface, external_id)
         return {"sidebar_collapsed": registry.sidebar_collapsed(surface, external_id)}
 
     @app.patch("/surfaces/{surface}/{external_id}/layout")
-    def patch_layout(surface: str, external_id: str, body: LayoutPatch):
-        _check_surface(surface)
+    def patch_layout(
+        surface: str,
+        external_id: str,
+        body: LayoutPatch,
+        who: auth_mod.Principal = Depends(principal),
+    ):
+        owned_surface(who, surface, external_id)
         registry.set_sidebar_collapsed(surface, external_id, body.sidebar_collapsed)
         return {"sidebar_collapsed": body.sidebar_collapsed}
 
     # --- voice --------------------------------------------------------------
 
     @app.post("/voice/transcribe")
-    async def transcribe(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+    async def transcribe(
+        request: Request,
+        file: UploadFile = File(...),
+        who: auth_mod.Principal = Depends(principal),
+    ) -> dict[str, Any]:
         audio = await file.read()
         try:
             result = await request.app.state.voice.transcribe(
@@ -561,7 +846,11 @@ def create_app(
         return {"text": result.text}
 
     @app.post("/voice/speak")
-    async def speak(request: Request, body: SpeakRequest) -> Response:
+    async def speak(
+        request: Request,
+        body: SpeakRequest,
+        who: auth_mod.Principal = Depends(principal),
+    ) -> Response:
         try:
             audio = await request.app.state.voice.speak(body.text, body.voice)
         except voice_mod.VoiceError as exc:

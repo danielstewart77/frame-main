@@ -40,7 +40,11 @@
       opts.body = JSON.stringify(body);
     }
     const resp = await fetch(path, opts);
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    if (!resp.ok) {
+      const err = new Error("HTTP " + resp.status);
+      err.status = resp.status;
+      throw err;
+    }
     return resp.status === 204 ? null : resp.json();
   }
 
@@ -821,11 +825,48 @@
     } catch (e) {}
   });
 
+  // --- login ---------------------------------------------------------------
+
+  const loginEl = document.getElementById("login");
+  const loginForm = document.getElementById("login-form");
+  const loginUser = document.getElementById("login-username");
+  const loginPass = document.getElementById("login-password");
+  const loginError = document.getElementById("login-error");
+
+  // The token comes back as an httponly cookie the browser attaches to every
+  // same-origin request and the WebSocket handshake, so nothing here holds it.
+  function showLogin(message) {
+    app.hidden = true;
+    loginEl.hidden = false;
+    loginError.hidden = !message;
+    loginError.textContent = message || "";
+    loginUser.focus();
+  }
+
+  loginForm.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    loginError.hidden = true;
+    try {
+      await api("POST", "/auth/login", {
+        username: loginUser.value.trim(),
+        password: loginPass.value,
+      });
+    } catch (e) {
+      showLogin(e.status === 401 ? "bad username or password" : "sign-in failed");
+      return;
+    }
+    loginPass.value = "";
+    loginEl.hidden = true;
+    app.hidden = false;
+    enter();
+  });
+
   // --- boot ----------------------------------------------------------------
 
-  (async function start() {
+  async function enter() {
     boot = await api("GET", "/console/bootstrap");
 
+    spawnHarness.innerHTML = "";
     boot.harnesses.forEach(function (name) {
       const option = document.createElement("option");
       option.value = name;
@@ -845,6 +886,17 @@
     // Restore the frames the server says are open. Mobile lands on the list.
     boot.frames.forEach(function (session) { openFrame(session); });
     showView(isWide() || frames.size ? "stage" : "list");
+  }
+
+  (async function start() {
+    try {
+      await api("GET", "/auth/me");
+    } catch (e) {
+      if (e.status === 401) { showLogin(""); return; }
+      throw e;
+    }
+    app.hidden = false;
+    await enter();
   })().catch(function (err) {
     document.body.textContent = "console failed to start: " + err.message;
   });

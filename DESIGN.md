@@ -27,8 +27,8 @@ over HTTP. No custom agent loop. The harness *is* the agent.
   return = resume. Both the ChatGPT-style sidebar and the fan-out-twelve desktop
   flow are just views over the same table.
 - **Multi-user schema now, multi-user machinery later.** Every table carries
-  `user_id` from day one. Login flows, quotas, and process isolation wait until a
-  real second user exists.
+  `user_id` from day one. Login and per-user session isolation are built; quotas
+  and per-user process pools wait until they are worth the machinery.
 
 ## Layout
 
@@ -241,7 +241,11 @@ and has no stdin form, so that harness stays on the per-turn path.
 
 Gate inbound events on **sender identity** before emitting a notification — an
 ungated channel is a prompt-injection path straight into the session's context,
-and a session running with approvals off will act on whatever lands there.
+and a session running with approvals off will act on whatever lands there. This
+is why `POST /sessions/{id}/channel/deliver` takes the session owner's authority
+(a service surface, or the user who owns it) rather than being an open door: it
+writes into the running session, and the container itself never fills that queue,
+it only drains it.
 
 ### The transcript outlives the process
 
@@ -314,10 +318,14 @@ frame-main's inference proxy does.
 Every surface — web console, Telegram bot, curl — speaks only this contract.
 
 ```
-GET    /health
-POST   /users                                   {display_name}
-GET    /users
-POST   /identities                              {surface, external_id, display_name?} -> {user_id}
+GET    /health                                  (public)
+POST   /auth/register                           {username, password, display_name?} (public until first account)
+POST   /auth/login                              {username, password} -> {token, user_id, expires_at} + cookie
+POST   /auth/logout
+GET    /auth/me                                 -> {kind, user_id, username}
+POST   /users                                   {display_name} (service only)
+GET    /users                                   (service only)
+POST   /identities                              {surface, external_id, display_name?} -> {user_id} (service only)
 
 POST   /users/{user_id}/sessions                {harness?, model?, title?, color?}
 GET    /users/{user_id}/sessions?status=active
@@ -352,9 +360,14 @@ PATCH  /surfaces/{surface}/{external_id}/layout {sidebar_collapsed}
 POST   /voice/transcribe                        multipart file -> {text}
 POST   /voice/speak                             {text, voice?} -> audio/mpeg
 
-GET    /console                                 the console shell
+GET    /console                                 the console shell (public: the login form)
 GET    /console/bootstrap                       identity + layout to restore
 ```
+
+Every route but `/health`, the `/auth` pair that hands out credentials, and the
+`/console` shell requires a bearer token — in the `Authorization` header, or the
+`httponly` `frame_auth` cookie the console rides on (a browser cannot attach a
+header to a WebSocket handshake, so the cookie carries the socket routes too).
 
 Streamed turns are normalised out of each harness's own json into one small
 vocabulary, so a surface renders `claude` and `codex` identically:
@@ -513,8 +526,31 @@ Two layers, both cheap:
 Azure Whisper for speech-to-text, an Azure neural voice for text-to-speech,
 called inline from the surface or the agent-server. No separate container.
 
+## Authentication
+
+Three principals reach the API, and they are not the same. A **user** logs in at
+the console and holds a token — returned once in the body and as an `httponly`
+cookie — that is scoped to their own account; another user's session id answers
+404, not 403, because confirming an id exists is itself a leak across accounts. A
+**service** is a surface process (the Telegram bot) holding `FRAME_SERVICE_TOKEN`;
+it acts for whichever user a chat identity resolves to, which is why minting
+users and resolving identities are service-only. A **session shim** inside a
+container holds a bearer minted for one session at spawn and rotated on every
+respawn; it may drain that session's channel and no other, so a compromised
+container cannot reach its neighbours.
+
+Passwords are stored as scrypt digests and every token as its sha256, so a
+readable database yields no usable credential. The plaintext token is returned
+exactly once, at login or at spawn. The first account on a fresh box is claimed
+with an open `POST /auth/register` — the operator standing in front of it — and
+once one credential exists, registration takes the service token.
+
+`auth.py` is all stdlib; the `credentials`, `auth_tokens`, and `session_tokens`
+tables carry the persistent side. Login tokens expire on a TTL and are purged on
+the same timer that reaps idle containers.
+
 ## Deferred (multi-user machinery)
 
-Real auth on the web surface, per-user rate limits/quotas, per-user process
-pools, and an onboarding flow for unknown surface identities. The schema already
-supports all of it; build when a second user is real.
+Per-user rate limits/quotas, per-user process pools, and an onboarding flow for
+unknown surface identities. The schema and the auth layer already support all of
+it; build when a second user is real.

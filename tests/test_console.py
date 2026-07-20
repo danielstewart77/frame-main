@@ -16,71 +16,55 @@ def user_id(client):
 # --- the shell -------------------------------------------------------------
 
 
-def test_console_page_is_served(client):
-    response = client.get("/console")
+def test_console_page_is_served(anon_client):
+    """The shell is public — it is only the login form until a token is in hand."""
+    response = anon_client.get("/console")
     assert response.status_code == 200
     assert "/console/static/console.js" in response.text
 
 
-def test_console_page_issues_an_identity_cookie(client):
-    client.cookies.clear()
-    response = client.get("/console")
-    assert response.cookies.get("frame_console_id")
-
-
-def test_console_page_keeps_an_existing_identity_cookie(client):
-    client.cookies.clear()
-    client.cookies.set("frame_console_id", "sticky")
-    client.get("/console")
-    first = client.get("/console/bootstrap").json()
-    second = client.get("/console/bootstrap").json()
-    assert first["external_id"] == "sticky"
-    assert first["user_id"] == second["user_id"]
-
-
-def test_console_static_assets_are_served(client):
+def test_console_static_assets_are_served(anon_client):
     for name in ("console.js", "console.css"):
-        assert client.get(f"/console/static/{name}").status_code == 200
+        assert anon_client.get(f"/console/static/{name}").status_code == 200
 
 
 # --- bootstrap -------------------------------------------------------------
 
 
-def test_bootstrap_without_a_cookie_is_400(client):
-    client.cookies.clear()
-    assert client.get("/console/bootstrap").status_code == 400
+def test_bootstrap_requires_a_login(anon_client):
+    assert anon_client.get("/console/bootstrap").status_code == 401
 
 
-def test_bootstrap_reports_identity_layout_and_harnesses(client):
-    client.cookies.clear()
-    client.cookies.set("frame_console_id", "abc")
-    body = client.get("/console/bootstrap").json()
-    assert body["external_id"] == "abc"
-    assert body["user_id"]
+def test_bootstrap_refuses_the_service_token(client):
+    """The console is for user logins; the service token has no console."""
+    assert client.get("/console/bootstrap").status_code == 403
+
+
+def test_bootstrap_reports_identity_layout_and_harnesses(logged_in):
+    body = logged_in.get("/console/bootstrap").json()
+    assert body["user_id"] == logged_in.user_id
+    assert body["external_id"] == logged_in.user_id
+    assert body["username"] == "daniel"
     assert body["sidebar_collapsed"] is False
     assert body["frames"] == []
     assert set(body["harnesses"]) == {"claude", "codex"}
     assert body["default_harness"] == "claude"
 
 
-def test_bootstrap_returns_the_open_frames_to_restore(client):
-    client.cookies.clear()
-    client.cookies.set("frame_console_id", "abc")
-    user = client.get("/console/bootstrap").json()["user_id"]
-    session = client.post(f"/users/{user}/sessions", json={"title": "keep"}).json()
-    client.patch(f"/sessions/{session['id']}", json={"frame_state": "docked"})
+def test_bootstrap_returns_the_open_frames_to_restore(logged_in):
+    user = logged_in.user_id
+    session = logged_in.post(f"/users/{user}/sessions", json={"title": "keep"}).json()
+    logged_in.patch(f"/sessions/{session['id']}", json={"frame_state": "docked"})
 
-    frames = client.get("/console/bootstrap").json()["frames"]
+    frames = logged_in.get("/console/bootstrap").json()["frames"]
     assert [f["id"] for f in frames] == [session["id"]]
     assert frames[0]["frame_state"] == "docked"
 
 
-def test_bootstrap_carries_the_collapsed_sidebar_back(client):
-    client.cookies.clear()
-    client.cookies.set("frame_console_id", "abc")
-    client.get("/console/bootstrap")
-    client.patch("/surfaces/web/abc/layout", json={"sidebar_collapsed": True})
-    assert client.get("/console/bootstrap").json()["sidebar_collapsed"] is True
+def test_bootstrap_carries_the_collapsed_sidebar_back(logged_in):
+    user = logged_in.user_id
+    logged_in.patch(f"/surfaces/web/{user}/layout", json={"sidebar_collapsed": True})
+    assert logged_in.get("/console/bootstrap").json()["sidebar_collapsed"] is True
 
 
 # --- interrupt -------------------------------------------------------------
@@ -128,7 +112,7 @@ def test_console_js_only_calls_routes_the_server_serves(client):
     for route in client.app.routes:
         served.add(getattr(route, "path", ""))
 
-    referenced = set(re.findall(r'"(/(?:sessions|users|surfaces|voice|console)[^"]*)"', source))
+    referenced = set(re.findall(r'"(/(?:sessions|users|surfaces|voice|console|auth)[^"]*)"', source))
     assert referenced, "no API paths found — the regex has drifted"
     for path in referenced:
         # JS builds paths by concatenation, so only the leading segment is
