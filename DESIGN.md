@@ -48,8 +48,9 @@ frame-main/
 │   └── entrypoint.sh        # clone session branch, install hook, await exec'd turns
 ├── surfaces/
 │   ├── chat.py              # surface-agnostic engage/disengage routing
-│   ├── telegram-bot.py      # chat_id → user_id; Telegram IO only
-│   └── web/                 # web console (designed, not yet built)
+│   └── telegram-bot.py      # chat_id → user_id; Telegram IO only
+├── proxy.py                 # per-session reverse proxy for the browser pane
+├── console/                 # web console: index.html + console.css + console.js
 ├── hooks/
 │   └── stop-commit.sh       # commit + push session branch every turn (runs in container)
 ├── db/
@@ -198,6 +199,7 @@ DELETE /sessions/{id}
 
 POST   /sessions/{id}/turn                      {prompt} -> ndjson event stream
 WS     /sessions/{id}/stream                    send {prompt}, receive events
+POST   /sessions/{id}/interrupt                 cut an in-flight turn short
 POST   /sessions/{id}/start                     provision the container
 POST   /sessions/{id}/stop                      stop it; state lives in origin.git
 POST   /sessions/{id}/archive                   remove the container, keep the branch
@@ -214,6 +216,9 @@ PATCH  /surfaces/{surface}/{external_id}/layout {sidebar_collapsed}
 
 POST   /voice/transcribe                        multipart file -> {text}
 POST   /voice/speak                             {text, voice?} -> audio/mpeg
+
+GET    /console                                 the console shell
+GET    /console/bootstrap                       identity + layout to restore
 ```
 
 Streamed turns are normalised out of each harness's own json into one small
@@ -283,9 +288,9 @@ The app ships with a web console — the desktop control surface for sessions.
   rather than re-cloning. Cloning is only offered when no local copy exists.
 
 The console is pure UI over the existing HTTP API and `sessions` table; it adds no
-new session semantics. The build spec — what to port from the existing Spark to
-Bloom terminal page and what is genuinely new — is
-[docs/console-delta.md](docs/console-delta.md).
+new session semantics. It lives in `console/` and is served at `/console`; see
+[docs/web-console.md](docs/web-console.md) for how it's built and where its
+limits are.
 
 ### Frame window management
 

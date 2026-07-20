@@ -62,6 +62,8 @@ class Provisioner(Protocol):
 
     async def attach_tty(self, container_id: str) -> Tty: ...
 
+    async def interrupt(self, session_id: str) -> bool: ...
+
     async def stop(self, container_id: str) -> None: ...
 
     async def remove(self, container_id: str) -> None: ...
@@ -84,6 +86,8 @@ class DockerProvisioner:
     def __init__(self, image: str, port_range: tuple[int, int] = (9600, 9699)):
         self.image = image
         self.port_range = port_range
+        # The turn currently executing per session, so it can be interrupted.
+        self._running: dict[str, asyncio.subprocess.Process] = {}
 
     async def provision(
         self, session: dict[str, Any], workspace: Any, env: dict[str, str]
@@ -144,12 +148,16 @@ class DockerProvisioner:
             stderr=asyncio.subprocess.PIPE,
         )
         assert process.stdout is not None
-        async for line in process.stdout:
-            event = harness_mod.parse_line(session["harness"], line.decode("utf-8", "replace"))
-            if event is not None:
-                yield event
-        await process.wait()
-        if process.returncode != 0:
+        self._running[session["id"]] = process
+        try:
+            async for line in process.stdout:
+                event = harness_mod.parse_line(session["harness"], line.decode("utf-8", "replace"))
+                if event is not None:
+                    yield event
+            await process.wait()
+        finally:
+            self._running.pop(session["id"], None)
+        if process.returncode not in (0, -15):
             stderr = b""
             if process.stderr is not None:
                 stderr = await process.stderr.read()
@@ -157,6 +165,14 @@ class DockerProvisioner:
                 "kind": "error",
                 "text": stderr.decode("utf-8", "replace").strip() or "harness exited nonzero",
             }
+
+    async def interrupt(self, session_id: str) -> bool:
+        """Terminate the in-flight turn. False if nothing was running."""
+        process = self._running.get(session_id)
+        if process is None or process.returncode is not None:
+            return False
+        process.terminate()
+        return True
 
     async def attach_tty(self, container_id: str) -> Tty:
         """A real pty into the container, so TUIs and slash-commands work."""
@@ -266,6 +282,7 @@ class FakeProvisioner:
         self.removed: list[str] = []
         self.turns: list[tuple[str, str]] = []
         self.ttys: list["FakeTty"] = []
+        self.interrupted: list[str] = []
         self._counter = 0
 
     async def provision(
@@ -297,6 +314,10 @@ class FakeProvisioner:
         tty = FakeTty(container_id)
         self.ttys.append(tty)
         return tty
+
+    async def interrupt(self, session_id: str) -> bool:
+        self.interrupted.append(session_id)
+        return session_id in self.provisioned
 
     async def stop(self, container_id: str) -> None:
         self.stopped.append(container_id)

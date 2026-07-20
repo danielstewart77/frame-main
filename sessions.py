@@ -167,6 +167,11 @@ class SessionManager:
             raise SessionError("session has no container")
         return await self.provisioner.attach_tty(session["container_id"])
 
+    async def interrupt(self, session_id: str) -> bool:
+        """Cut an in-flight turn short. False if the session wasn't working."""
+        self.get(session_id)
+        return await self.provisioner.interrupt(session_id)
+
     async def app_port(self, session_id: str) -> int:
         """The session app's host port, provisioning the container if needed."""
         session = await self.ensure_running(session_id)
