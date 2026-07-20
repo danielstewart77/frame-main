@@ -80,6 +80,9 @@ class DockerProvisioner:
             "--rm",
             "--name",
             name,
+            # so ANTHROPIC_BASE_URL can point at a proxy running on the host
+            "--add-host",
+            "host.docker.internal:host-gateway",
             "-v",
             f"{workspace.origin}:/origin.git",
             "-v",

@@ -80,6 +80,15 @@ async def test_container_starts_on_the_session_branch(container):
 
 
 @pytest.mark.asyncio
+async def test_the_host_is_reachable_for_a_proxied_base_url(container):
+    """ANTHROPIC_BASE_URL may point at an inference proxy on the host."""
+    handle, _, _ = container
+    code, out = await _exec(handle.container_id, "getent hosts host.docker.internal")
+    assert code == 0
+    assert out.strip()
+
+
+@pytest.mark.asyncio
 async def test_both_harness_clis_are_installed(container):
     handle, _, _ = container
     code, out = await _exec(handle.container_id, "which claude codex")

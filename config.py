@@ -86,6 +86,20 @@ class Settings:
     debug: bool = field(default_factory=lambda: _bool("FRAME_DEBUG", False))
 
 
+def load_dotenv(path: Path | None = None) -> None:
+    """Fold `.env` into os.environ. Real env vars always win."""
+    path = path or ROOT / ".env"
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
 def load() -> Settings:
-    """Read settings fresh from the environment."""
+    """Read settings fresh from the environment, with `.env` as the base layer."""
+    load_dotenv()
     return Settings()
