@@ -11,16 +11,27 @@ a session, waiting for the container's stdio shim to long-poll them out.
 
 Both are bounded. A surface that stops reading, or a container that dies mid-poll,
 must not grow the control plane's memory without limit.
+
+A subscriber that falls too far behind is dropped rather than quietly starved:
+every published event carries a monotonic `seq`, the bus keeps a replay buffer of
+the recent tail, and a reconnecting surface passes the last `seq` it rendered to
+get the gap backfilled. Silently discarding events would leave a frame showing a
+conversation with a hole in it and no way to know; disconnecting turns that into
+a reconnect that comes back whole.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from typing import Any, AsyncIterator
 
 # One slow subscriber shouldn't stall the others or grow without bound; past this
-# the oldest events are dropped and the subscriber is told what it missed.
+# it is disconnected and expected to reconnect with the `seq` it got to.
 SUBSCRIBER_QUEUE_MAX = 512
+# How much of a session's tail is retained for reconnect backfill. Larger than a
+# subscriber queue so a surface that overflows can always be made whole again.
+REPLAY_BUFFER_MAX = 2048
 # Undelivered inbound events for a session whose container is gone or wedged.
 CHANNEL_QUEUE_MAX = 256
 
@@ -31,20 +42,28 @@ class Subscription:
     def __init__(self, bus: "SessionBus", maxsize: int = SUBSCRIBER_QUEUE_MAX) -> None:
         self._bus = bus
         self._queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=maxsize)
-        self.dropped = 0
+        self.overflowed = False
+        self.last_seq = 0
 
     def _put(self, event: dict[str, Any] | None) -> None:
         try:
             self._queue.put_nowait(event)
         except asyncio.QueueFull:
-            # Drop the oldest rather than the newest: on a live stream the tail
-            # is what the surface actually needs to render.
-            try:
-                self._queue.get_nowait()
-            except asyncio.QueueEmpty:  # pragma: no cover - queue was just full
-                pass
-            self.dropped += 1
-            self._queue.put_nowait(event)
+            self._overflow()
+
+    def _overflow(self) -> None:
+        """This reader is too far behind to be made whole in place — end it."""
+        if self.overflowed:
+            return
+        self.overflowed = True
+        # Evict one event to make room for the terminator. What's lost here is
+        # replayed on reconnect from `last_seq`, which is the point.
+        try:
+            self._queue.get_nowait()
+        except asyncio.QueueEmpty:  # pragma: no cover - queue was just full
+            pass
+        self._queue.put_nowait(None)
+        self._bus.unsubscribe(self)
 
     async def __aenter__(self) -> "Subscription":
         return self
@@ -61,37 +80,71 @@ class Subscription:
     async def _iterate(self) -> AsyncIterator[dict[str, Any]]:
         while True:
             event = await self._queue.get()
-            if event is None:  # the bus closed
+            if event is None:  # the bus closed, or this reader overflowed
                 return
+            seq = event.get("seq")
+            if isinstance(seq, int):
+                self.last_seq = seq
             yield event
 
 
 class SessionBus:
     """Fan-out of one session's events to every attached surface."""
 
-    def __init__(self) -> None:
+    def __init__(self, replay_max: int = REPLAY_BUFFER_MAX) -> None:
         self._subscribers: list[Subscription] = []
+        self._history: deque[dict[str, Any]] = deque(maxlen=replay_max)
+        self._seq = 0
         self.closed = False
 
     @property
     def subscriber_count(self) -> int:
         return len(self._subscribers)
 
-    def subscribe(self) -> Subscription:
+    @property
+    def last_seq(self) -> int:
+        return self._seq
+
+    def subscribe(self, since: int | None = None) -> Subscription:
+        """Attach a reader, optionally backfilling everything after `since`.
+
+        A reconnecting surface passes the last `seq` it rendered. If that point
+        has already aged out of the replay buffer the backfill opens with a
+        `gap` event naming the range, so the surface can refetch rather than
+        render a hole it doesn't know about.
+        """
         subscription = Subscription(self)
+        if since is not None:
+            subscription.last_seq = since
+            for event in self._replay_from(since):
+                subscription._put(event)
         self._subscribers.append(subscription)
         return subscription
+
+    def _replay_from(self, since: int) -> list[dict[str, Any]]:
+        missed = [event for event in self._history if event["seq"] > since]
+        if not self._history:
+            return missed
+        earliest = self._history[0]["seq"]
+        if since < earliest - 1:
+            gap = {"kind": "gap", "from_seq": since + 1, "to_seq": earliest - 1}
+            return [gap, *missed]
+        return missed
 
     def unsubscribe(self, subscription: Subscription) -> None:
         if subscription in self._subscribers:
             self._subscribers.remove(subscription)
 
-    def publish(self, event: dict[str, Any]) -> None:
+    def publish(self, event: dict[str, Any]) -> dict[str, Any]:
         """Hand one event to every current subscriber. Never blocks."""
         if self.closed:
-            return
+            return event
+        self._seq += 1
+        stamped = {**event, "seq": self._seq}
+        self._history.append(stamped)
         for subscription in list(self._subscribers):
-            subscription._put(event)
+            subscription._put(stamped)
+        return stamped
 
     def close(self) -> None:
         self.closed = True
@@ -158,8 +211,8 @@ class SessionStreams:
             self._channels[session_id] = queue
         return queue
 
-    def publish(self, session_id: str, event: dict[str, Any]) -> None:
-        self.bus(session_id).publish(event)
+    def publish(self, session_id: str, event: dict[str, Any]) -> dict[str, Any]:
+        return self.bus(session_id).publish(event)
 
     def discard(self, session_id: str) -> None:
         """Drop a session's streams — its container is gone for good."""

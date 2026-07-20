@@ -276,8 +276,9 @@ PATCH  /sessions/{id}                           {title?, color?, status?, frame_
 DELETE /sessions/{id}
 
 POST   /sessions/{id}/turn                      {prompt} -> ndjson event stream
-WS     /sessions/{id}/stream                    subscribe to everything the session emits;
-                                                send {prompt} to start a turn
+WS     /sessions/{id}/stream?since=<seq>        subscribe to everything the session emits;
+                                                send {prompt} to start a turn; `since` replays
+                                                the tail a reconnecting surface missed
 POST   /sessions/{id}/channel/deliver           {content, meta?} inbound wake -> {queued}
 GET    /sessions/{id}/channel/events?timeout=   shim long poll -> {events}
 POST   /sessions/{id}/channel/reply             {chat_id, text} agent reply out
@@ -315,11 +316,21 @@ vocabulary, so a surface renders `claude` and `codex` identically:
 | `result` | `text` | turn finished |
 | `error` | `text` | turn failed |
 | `reply` | `chat_id`, `text` | agent routed a message out through its channel |
+| `gap` | `from_seq`, `to_seq` | events in that range aged out before reconnect |
 | `raw` | `event` | unrecognised, passed through |
 
 These reach a surface through the session's bus rather than the request that
 started the turn, so a frame watching `/sessions/{id}/stream` sees turns opened
 by a channel event or by another surface, not only its own.
+
+Every published event carries a monotonic `seq`, and the bus keeps a replay
+buffer of the recent tail. A surface that stops draining its socket is
+disconnected rather than quietly starved: it reconnects with `?since=<seq>` and
+the missed events are replayed first. A slow surface means something went wrong
+with that surface, and a visible reconnect that comes back whole is worth more
+than a stream that silently develops a hole. If the buffer has already rolled
+past the requested point the backfill opens with a `gap` event, so a surface
+never renders missing output as if nothing happened.
 
 ## Swappable externals
 

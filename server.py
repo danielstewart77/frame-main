@@ -214,11 +214,20 @@ def create_app(
         The socket subscribes rather than drives. A prompt sent over it starts a
         turn in the background and the events come back the same way a
         channel-opened turn does, so a frame sees work it didn't initiate.
+
+        Reconnect with `?since=<seq>` to have the missed tail replayed first. A
+        socket that stops draining is closed with 4429 rather than silently
+        starved, because a reconnect can be made whole and a hole can't.
         """
         manager: SessionManager = websocket.app.state.manager
         await websocket.accept()
+        raw_since = websocket.query_params.get("since")
         try:
-            subscription = manager.subscribe(session_id)
+            since = int(raw_since) if raw_since is not None else None
+        except ValueError:
+            since = None
+        try:
+            subscription = manager.subscribe(session_id, since)
         except SessionError as exc:
             await websocket.send_json({"kind": "error", "text": str(exc)})
             await websocket.close()
@@ -227,6 +236,8 @@ def create_app(
         async def pump() -> None:
             async for event in subscription:
                 await websocket.send_json(event)
+            if subscription.overflowed:
+                await websocket.close(code=4429, reason="stream fell behind; reconnect with since")
 
         pumping = asyncio.create_task(pump())
         try:

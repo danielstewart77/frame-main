@@ -37,8 +37,19 @@ async def test_every_subscriber_sees_every_event():
 
     bus.publish({"kind": "text", "text": "hello"})
 
-    assert await drain(first, 1) == [{"kind": "text", "text": "hello"}]
-    assert await drain(second, 1) == [{"kind": "text", "text": "hello"}]
+    assert await drain(first, 1) == [{"kind": "text", "text": "hello", "seq": 1}]
+    assert await drain(second, 1) == [{"kind": "text", "text": "hello", "seq": 1}]
+
+
+async def test_every_published_event_gets_a_monotonic_seq():
+    bus = SessionBus()
+    subscription = bus.subscribe()
+
+    for index in range(3):
+        bus.publish({"kind": "text", "text": str(index)})
+
+    assert [event["seq"] for event in await drain(subscription, 3)] == [1, 2, 3]
+    assert bus.last_seq == 3
 
 
 async def test_publish_never_blocks_without_subscribers():
@@ -73,7 +84,7 @@ async def test_publish_after_close_is_a_no_op():
     bus.publish({"kind": "text", "text": "too late"})  # must not raise
 
 
-async def test_slow_subscriber_drops_oldest_and_counts_it():
+async def test_slow_subscriber_is_disconnected_rather_than_starved():
     bus = SessionBus()
     subscription = bus.subscribe()
     subscription._queue = asyncio.Queue(maxsize=2)
@@ -81,12 +92,54 @@ async def test_slow_subscriber_drops_oldest_and_counts_it():
     for index in range(4):
         bus.publish({"kind": "text", "text": str(index)})
 
-    # The tail is what a live frame needs; the head is what gets dropped.
-    assert subscription.dropped == 2
-    assert await drain(subscription, 2) == [
-        {"kind": "text", "text": "2"},
-        {"kind": "text", "text": "3"},
-    ]
+    assert subscription.overflowed
+    assert bus.subscriber_count == 0
+    # Iteration ends instead of resuming mid-stream: the surface must reconnect.
+    received = [event async for event in subscription]
+    assert [event["text"] for event in received] == ["1"]
+
+
+async def test_reconnect_replays_the_tail_after_the_last_seen_seq():
+    bus = SessionBus()
+    for index in range(4):
+        bus.publish({"kind": "text", "text": str(index)})
+
+    subscription = bus.subscribe(since=2)
+
+    assert [event["text"] for event in await drain(subscription, 2)] == ["2", "3"]
+
+
+async def test_reconnect_past_the_replay_buffer_reports_the_gap():
+    bus = SessionBus(replay_max=2)
+    for index in range(4):
+        bus.publish({"kind": "text", "text": str(index)})
+
+    subscription = bus.subscribe(since=0)
+    received = await drain(subscription, 3)
+
+    assert received[0] == {"kind": "gap", "from_seq": 1, "to_seq": 2}
+    assert [event["text"] for event in received[1:]] == ["2", "3"]
+
+
+async def test_reconnect_at_the_head_replays_nothing():
+    bus = SessionBus()
+    bus.publish({"kind": "text", "text": "0"})
+
+    subscription = bus.subscribe(since=1)
+    bus.publish({"kind": "text", "text": "1"})
+
+    assert [event["text"] for event in await drain(subscription, 1)] == ["1"]
+
+
+async def test_subscription_tracks_the_last_seq_it_yielded():
+    bus = SessionBus()
+    subscription = bus.subscribe()
+    bus.publish({"kind": "text", "text": "0"})
+    bus.publish({"kind": "text", "text": "1"})
+
+    await drain(subscription, 2)
+
+    assert subscription.last_seq == 2
 
 
 # --- channel queue ---------------------------------------------------------

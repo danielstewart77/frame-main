@@ -110,7 +110,7 @@ async def test_channel_reply_is_published_to_watchers(manager, session):
     manager.channel_reply(session["id"], "chat-7", "all done")
 
     assert await drain(subscription, 1) == [
-        {"kind": "reply", "chat_id": "chat-7", "text": "all done"}
+        {"kind": "reply", "chat_id": "chat-7", "text": "all done", "seq": 1}
     ]
 
 
@@ -208,7 +208,20 @@ def test_stream_socket_delivers_a_channel_opened_turn(client, user):
 
     with client.websocket_connect(f"/sessions/{created['id']}/stream") as socket:
         client.post(f"/sessions/{created['id']}/channel/reply", json={"chat_id": "7", "text": "hi"})
-        assert socket.receive_json() == {"kind": "reply", "chat_id": "7", "text": "hi"}
+        assert socket.receive_json() == {"kind": "reply", "chat_id": "7", "text": "hi", "seq": 1}
+
+
+def test_stream_socket_replays_what_a_reconnecting_surface_missed(client, user):
+    """A surface that dropped off comes back whole, not from the live edge."""
+    created = client.post(f"/users/{user['user_id']}/sessions", json={}).json()
+    for index in range(3):
+        client.post(
+            f"/sessions/{created['id']}/channel/reply",
+            json={"chat_id": "7", "text": str(index)},
+        )
+
+    with client.websocket_connect(f"/sessions/{created['id']}/stream?since=1") as socket:
+        assert [socket.receive_json()["text"] for _ in range(2)] == ["1", "2"]
 
 
 def test_stream_socket_still_runs_a_prompt(client, user):
