@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -91,10 +92,35 @@ class SpeakRequest(BaseModel):
 # --- app --------------------------------------------------------------------
 
 
+async def _reap_loop(app: FastAPI) -> None:
+    """Stop idle containers on a timer.
+
+    `reap_idle` is the whole of the container lifecycle policy, and without
+    something calling it the fleet only ever grows: a box running sessions
+    unattended exhausts its memory or its app-port range and takes every live
+    session down with it. A reap that raises must not kill the loop, or the
+    first transient docker error silently disables reaping for the process.
+    """
+    interval = app.state.settings.reap_interval_seconds
+    manager = app.state.manager
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await manager.reap_idle()
+        except Exception:  # pragma: no cover - defensive, logged not raised
+            logging.getLogger(__name__).exception("idle reap failed")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    yield
-    await app.state.proxy_client.aclose()
+    reaper = asyncio.create_task(_reap_loop(app))
+    try:
+        yield
+    finally:
+        reaper.cancel()
+        with suppress(asyncio.CancelledError):
+            await reaper
+        await app.state.proxy_client.aclose()
 
 
 def create_app(

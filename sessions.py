@@ -45,6 +45,10 @@ class SessionManager:
         # Turns started by a channel event have no requester holding the
         # generator open, so the manager owns them until they finish.
         self._background: set[asyncio.Task[None]] = set()
+        # `last_active` is only stamped when a turn ends, so a long unattended
+        # turn looks idle while it is working. The reaper reads this to tell the
+        # difference between a session doing nothing and one mid-thought.
+        self._in_flight: set[str] = set()
         # The harness stays up between turns, so it can also speak without being
         # prompted. That output belongs to the session, not to any requester.
         provisioner.on_unsolicited = self._publish_unsolicited
@@ -159,6 +163,7 @@ class SessionManager:
         timeout = self.settings.turn_timeout_seconds
         bus = self.streams.bus(session_id)
         async with self.semaphore:
+            self._in_flight.add(session_id)
             stream = self.provisioner.run_turn(
                 session,
                 prompt,
@@ -182,6 +187,7 @@ class SessionManager:
                     }
                 )
             finally:
+                self._in_flight.discard(session_id)
                 await stream.aclose()
         self.registry.touch(session_id)
 
@@ -308,6 +314,8 @@ class SessionManager:
         cutoff = now - timedelta(minutes=self.settings.idle_timeout_minutes)
         reaped = []
         for session in self.registry.running_sessions():
+            if session["id"] in self._in_flight:
+                continue
             last = datetime.fromisoformat(session["last_active"])
             if last.tzinfo is None:
                 last = last.replace(tzinfo=timezone.utc)

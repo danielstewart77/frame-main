@@ -158,6 +158,33 @@ async def test_reap_idle_stops_only_stale_containers(manager, user_id, registry)
 
 
 @pytest.mark.asyncio
+async def test_reap_spares_a_session_that_is_mid_turn(manager, user_id, registry):
+    # `last_active` is only stamped when a turn ends, so a long unattended turn
+    # looks stale while it is working. Reaping it would kill the work.
+    session = await manager.ensure_running(manager.create(user_id)["id"])
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    registry.conn.execute("UPDATE sessions SET last_active=? WHERE id=?", (old, session["id"]))
+    registry.conn.commit()
+
+    manager._in_flight.add(session["id"])
+    assert await manager.reap_idle() == []
+    assert registry.get_session(session["id"])["container_id"] is not None
+
+    manager._in_flight.discard(session["id"])
+    assert await manager.reap_idle() == [session["id"]]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_marks_itself_in_flight_and_clears_it(manager, user_id):
+    session = await manager.ensure_running(manager.create(user_id)["id"])
+    seen = []
+    async for _ in manager.turn(session["id"], "hi"):
+        seen.append(manager._in_flight & {session["id"]})
+    assert seen and all(marked for marked in seen)
+    assert session["id"] not in manager._in_flight
+
+
+@pytest.mark.asyncio
 async def test_a_turn_without_a_container_is_an_error(manager, user_id, provisioner):
     session = manager.create(user_id)
     with pytest.raises(ProvisionError):

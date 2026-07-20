@@ -36,6 +36,13 @@ for line in sys.stdin:
     print(json.dumps({"type": "result", "result": text.upper()}), flush=True)
 """
 
+# The same harness, minus the closing `result` — so a turn stays in flight until
+# something interrupts it. Interrupting the standard fake is a race: it finishes
+# the turn on its own the instant the prompt lands.
+HANGING_HARNESS = FAKE_HARNESS.replace(
+    '    print(json.dumps({"type": "result", "result": text.upper()}), flush=True)\n', ""
+).replace('"type": "stream_event"', '"type": "noop"')
+
 
 def make_process(script: str = FAKE_HARNESS, sink=None) -> HarnessProcess:
     spawns: list[int] = []
@@ -144,7 +151,7 @@ async def test_a_turn_takes_precedence_over_the_sink():
 
 async def test_interrupt_ends_the_turn_without_killing_the_process():
     """Signalling the process would take the session's context with it."""
-    process = make_process(script=FAKE_HARNESS.replace('"type": "stream_event"', '"type": "noop"'))
+    process = make_process(script=HANGING_HARNESS)
     try:
         await process.start()
         stream = process.turn("hello").__aiter__()

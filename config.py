@@ -49,6 +49,11 @@ class Settings:
     idle_timeout_minutes: int = field(
         default_factory=lambda: int(os.getenv("FRAME_IDLE_TIMEOUT_MINUTES", "30"))
     )
+    # How often the reaper sweeps for idle containers. Well under the idle
+    # timeout, since a session is only reclaimed on the first sweep past it.
+    reap_interval_seconds: int = field(
+        default_factory=lambda: int(os.getenv("FRAME_REAP_INTERVAL_SECONDS", "60"))
+    )
     # Ceiling on a single turn. The harness retries an unreachable provider ten
     # times before giving up, so without this a bad endpoint wedges the frame.
     turn_timeout_seconds: int = field(
