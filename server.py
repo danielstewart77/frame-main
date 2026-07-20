@@ -6,7 +6,9 @@ entrypoint is `agent-server.py`.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket
@@ -14,10 +16,13 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.websockets import WebSocketDisconnect
 
+import httpx
+
+import proxy as proxy_mod
 import registry as registry_mod
 import voice as voice_mod
 from config import Settings, load
-from sandbox.provision import get_provisioner
+from sandbox.provision import ProvisionError, get_provisioner
 from sessions import SessionError, SessionManager, UnknownSession
 
 SURFACES = {"telegram", "web"}
@@ -71,11 +76,18 @@ class SpeakRequest(BaseModel):
 # --- app --------------------------------------------------------------------
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    yield
+    await app.state.proxy_client.aclose()
+
+
 def create_app(
     settings: Settings | None = None,
     registry: registry_mod.Registry | None = None,
     provisioner: Any = None,
     voice: voice_mod.VoiceService | None = None,
+    proxy_client: httpx.AsyncClient | None = None,
 ) -> FastAPI:
     settings = settings or load()
     registry = registry or registry_mod.Registry(settings.db_path)
@@ -85,11 +97,14 @@ def create_app(
     voice = voice or voice_mod.get_voice(settings.voice, settings)
     manager = SessionManager(registry, settings, provisioner)
 
-    app = FastAPI(title="frame-main agent-server")
+    app = FastAPI(title="frame-main agent-server", lifespan=_lifespan)
     app.state.settings = settings
     app.state.registry = registry
     app.state.manager = manager
     app.state.voice = voice
+    app.state.proxy_client = proxy_client or httpx.AsyncClient(
+        follow_redirects=False, timeout=30.0
+    )
 
     def get_manager(request: Request) -> SessionManager:
         return request.app.state.manager
@@ -239,6 +254,85 @@ def create_app(
             "branch": session["branch"],
             "command": f"git clone -b {session['branch']} {workspace.clone_url()}",
         }
+
+    # --- sidecar panes: browser + full terminal ------------------------------
+
+    @app.api_route(
+        "/sessions/{session_id}/app/{path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+    )
+    async def session_app(
+        session_id: str,
+        path: str,
+        request: Request,
+        manager: SessionManager = Depends(get_manager),
+    ) -> Response:
+        """Browser pane: the session's own app, reverse-proxied off its app_port."""
+        _resolve(manager, session_id)
+        try:
+            port = await manager.app_port(session_id)
+        except SessionError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+        try:
+            status, headers, content = await proxy_mod.forward(
+                request.app.state.proxy_client,
+                request.method,
+                port,
+                path,
+                request.url.query,
+                dict(request.headers),
+                await request.body(),
+                base=f"/sessions/{session_id}/app/",
+            )
+        except proxy_mod.ProxyError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return Response(content=content, status_code=status, headers=headers)
+
+    @app.websocket("/sessions/{session_id}/tui")
+    async def tui_socket(websocket: WebSocket, session_id: str) -> None:
+        """Full-terminal pane: a real pty on the container, framed over the socket.
+
+        Client sends `{"data": "..."}` keystrokes or `{"resize": {rows, cols}}`;
+        the server sends terminal output as text frames.
+        """
+        manager: SessionManager = websocket.app.state.manager
+        await websocket.accept()
+        try:
+            manager.get(session_id)
+        except UnknownSession as exc:
+            await websocket.close(code=4404, reason=str(exc))
+            return
+        try:
+            tty = await manager.attach_tty(session_id)
+        except (SessionError, ProvisionError) as exc:
+            await websocket.close(code=4409, reason=str(exc))
+            return
+
+        async def pump_out() -> None:
+            while True:
+                chunk = await tty.read()
+                if not chunk:
+                    break
+                await websocket.send_text(chunk.decode("utf-8", "replace"))
+
+        pump = asyncio.create_task(pump_out())
+        try:
+            while True:
+                message = await websocket.receive_json()
+                if not isinstance(message, dict):
+                    continue
+                if "resize" in message:
+                    size = message["resize"] or {}
+                    tty.resize(int(size.get("rows", 24)), int(size.get("cols", 80)))
+                data = message.get("data")
+                if data:
+                    await tty.write(data.encode())
+        except WebSocketDisconnect:
+            pass
+        finally:
+            pump.cancel()
+            await tty.close()
 
     # --- surface bindings + layout -----------------------------------------
 

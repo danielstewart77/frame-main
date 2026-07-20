@@ -160,6 +160,21 @@ class SessionManager:
                 await stream.aclose()
         self.registry.touch(session_id)
 
+    async def attach_tty(self, session_id: str) -> Any:
+        """An interactive shell on the session's container, for the TUI pane."""
+        session = await self.ensure_running(session_id)
+        if not session["container_id"]:
+            raise SessionError("session has no container")
+        return await self.provisioner.attach_tty(session["container_id"])
+
+    async def app_port(self, session_id: str) -> int:
+        """The session app's host port, provisioning the container if needed."""
+        session = await self.ensure_running(session_id)
+        port = session.get("app_port")
+        if not port:
+            raise SessionError("session has no app port")
+        return int(port)
+
     async def stop(self, session_id: str) -> dict[str, Any]:
         """Stop the container; state persists in origin.git, a resume re-provisions."""
         session = self.get(session_id)
