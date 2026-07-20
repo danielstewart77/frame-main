@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "frame": {
+      "command": "/opt/frame/venv/bin/python",
+      "args": ["/opt/frame/channel.py"]
+    }
+  }
+}

@@ -23,6 +23,10 @@ CLAUDE = "claude"
 CODEX = "codex"
 SUPPORTED = (CLAUDE, CODEX)
 
+# The MCP server name in the sandbox image's mcp.json. Codex has no channel
+# equivalent, so channel_config is ignored for that harness.
+CHANNEL_SERVER_NAME = "frame"
+
 
 class UnknownHarness(ValueError):
     pass
@@ -34,8 +38,16 @@ def build_argv(
     model: str,
     resume_id: str | None = None,
     system_prompt: str = "",
+    channel_config: str | None = None,
 ) -> list[str]:
-    """The exact command the container entrypoint execs."""
+    """The exact command the container entrypoint execs.
+
+    `channel_config` is the path to the MCP config declaring the frame channel.
+    Passing it registers the channel so the control plane can push events into a
+    running session; the flag is `--dangerously-load-development-channels`
+    because channels are a research preview and only Anthropic-allowlisted
+    plugins register without it.
+    """
     if harness == CLAUDE:
         argv = [
             "claude",
@@ -52,6 +64,13 @@ def build_argv(
             argv += ["--resume", resume_id]
         if system_prompt:
             argv += ["--append-system-prompt", system_prompt]
+        if channel_config:
+            argv += [
+                "--mcp-config",
+                channel_config,
+                "--dangerously-load-development-channels",
+                f"server:{CHANNEL_SERVER_NAME}",
+            ]
         return argv
 
     if harness == CODEX:
