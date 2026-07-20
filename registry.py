@@ -7,6 +7,7 @@ able to find and resume every session.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -47,6 +48,11 @@ class Registry:
 
     def _init_schema(self) -> None:
         self.conn.executescript(SCHEMA_PATH.read_text())
+        # `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so a
+        # column added to the schema never reaches a database that predates it.
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(sessions)")}
+        if "outcome" not in columns:
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN outcome TEXT")
         self.conn.commit()
 
     def close(self) -> None:
@@ -189,6 +195,45 @@ class Registry:
         )
         self.conn.commit()
         return self.get_session(session_id)
+
+    # --- session events ----------------------------------------------------
+
+    def append_event(
+        self, session_id: str, seq: int, kind: str, text: str | None, data: dict[str, Any]
+    ) -> None:
+        """Record one event. Idempotent on (session_id, seq) so a replayed
+        write cannot double up the transcript."""
+        self.conn.execute(
+            """INSERT OR IGNORE INTO session_events
+                 (session_id, seq, kind, text, data, created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (session_id, seq, kind, text, json.dumps(data, default=str), now()),
+        )
+        self.conn.commit()
+
+    def session_events(
+        self, session_id: str, after_seq: int = 0, limit: int = 1000
+    ) -> list[dict[str, Any]]:
+        rows = _all(
+            self.conn.execute(
+                """SELECT seq, kind, text, data, created_at FROM session_events
+                   WHERE session_id=? AND seq > ? ORDER BY seq LIMIT ?""",
+                (session_id, after_seq, limit),
+            )
+        )
+        for row in rows:
+            row["data"] = json.loads(row["data"]) if row["data"] else {}
+        return rows
+
+    def delete_session_events(self, session_id: str) -> None:
+        self.conn.execute("DELETE FROM session_events WHERE session_id=?", (session_id,))
+        self.conn.commit()
+
+    def set_outcome(self, session_id: str, outcome: str | None) -> None:
+        self.conn.execute(
+            "UPDATE sessions SET outcome=? WHERE id=?", (outcome, session_id)
+        )
+        self.conn.commit()
 
     def touch(self, session_id: str) -> None:
         self.conn.execute("UPDATE sessions SET last_active=? WHERE id=?", (now(), session_id))

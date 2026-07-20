@@ -15,7 +15,16 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 import httpx
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    WebSocket,
+)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -339,6 +348,33 @@ def create_app(
         _resolve(manager, session_id)
         await manager.delete(session_id)
         return Response(status_code=204)
+
+    @app.get("/sessions/{session_id}/events")
+    def session_events(
+        session_id: str,
+        after_seq: int = 0,
+        limit: int = Query(default=1000, ge=1, le=5000),
+        manager: SessionManager = Depends(get_manager),
+    ):
+        """What the session said, after the fact.
+
+        The bus only serves whoever is attached while it happens, which for an
+        unattended run is nobody. This reads the persisted copy, so a session
+        that finished overnight can still be read in the morning.
+        """
+        session = _resolve(manager, session_id)
+        # Commit any text run still open, so a read mid-turn is not missing the
+        # sentence being written as it is read.
+        manager.transcript.flush(session_id)
+        events = manager.registry.session_events(session_id, after_seq, limit)
+        return {
+            "session_id": session_id,
+            "status": session["status"],
+            "outcome": session["outcome"],
+            "running": session_id in manager._in_flight,
+            "events": events,
+            "last_seq": events[-1]["seq"] if events else after_seq,
+        }
 
     # --- pull down and browse ----------------------------------------------
 

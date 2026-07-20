@@ -99,6 +99,48 @@ def test_turn_streams_ndjson_events_and_persists_resume_id(client, user_id):
     assert client.get(f"/sessions/{session['id']}").json()["resume_id"] == events[0]["resume_id"]
 
 
+def test_events_route_reads_back_a_finished_turn(client, user_id):
+    """Nobody was attached while it ran; this is how you find out what happened."""
+    session = make_session(client, user_id)
+    with client.stream("POST", f"/sessions/{session['id']}/turn", json={"prompt": "hello"}) as r:
+        [line for line in r.iter_lines()]
+
+    body = client.get(f"/sessions/{session['id']}/events").json()
+    assert body["outcome"] == "ok"
+    assert body["running"] is False
+    kinds = [event["kind"] for event in body["events"]]
+    assert "result" in kinds
+    assert body["last_seq"] == body["events"][-1]["seq"]
+
+
+def test_events_route_pages_from_a_seq(client, user_id):
+    session = make_session(client, user_id)
+    with client.stream("POST", f"/sessions/{session['id']}/turn", json={"prompt": "hello"}) as r:
+        [line for line in r.iter_lines()]
+
+    everything = client.get(f"/sessions/{session['id']}/events").json()
+    tail = client.get(
+        f"/sessions/{session['id']}/events", params={"after_seq": everything["events"][0]["seq"]}
+    ).json()
+    assert [event["seq"] for event in tail["events"]] == [
+        event["seq"] for event in everything["events"][1:]
+    ]
+
+
+def test_events_on_an_unknown_session_is_404(client):
+    assert client.get("/sessions/ghost/events").status_code == 404
+
+
+def test_deleting_a_session_takes_its_transcript_with_it(client, user_id):
+    session = make_session(client, user_id)
+    with client.stream("POST", f"/sessions/{session['id']}/turn", json={"prompt": "hello"}) as r:
+        [line for line in r.iter_lines()]
+    assert client.get(f"/sessions/{session['id']}/events").json()["events"]
+
+    assert client.delete(f"/sessions/{session['id']}").status_code in (200, 204)
+    assert client.get(f"/sessions/{session['id']}/events").status_code == 404
+
+
 def test_turn_requires_a_nonempty_prompt(client, user_id):
     session = make_session(client, user_id)
     assert client.post(f"/sessions/{session['id']}/turn", json={"prompt": ""}).status_code == 422

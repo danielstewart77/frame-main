@@ -16,6 +16,7 @@ import registry as registry_mod
 from bus import SessionStreams, Subscription
 from config import Settings
 from sandbox.provision import Provisioner, allocate_port
+from transcript import TranscriptWriter
 from workspace import Workspace
 
 # How long the container's shim holds a poll open before reissuing it.
@@ -49,6 +50,9 @@ class SessionManager:
         # turn looks idle while it is working. The reaper reads this to tell the
         # difference between a session doing nothing and one mid-thought.
         self._in_flight: set[str] = set()
+        # The bus is live-only and in-memory; this is the copy you can read back.
+        self.transcript = TranscriptWriter(registry)
+        self.streams.on_publish = self.transcript.write
         # The harness stays up between turns, so it can also speak without being
         # prompted. That output belongs to the session, not to any requester.
         provisioner.on_unsolicited = self._publish_unsolicited
@@ -164,6 +168,9 @@ class SessionManager:
         bus = self.streams.bus(session_id)
         async with self.semaphore:
             self._in_flight.add(session_id)
+            # Null while working, so a session list can tell "still going" from
+            # "finished" without inspecting the transcript.
+            self.registry.set_outcome(session_id, None)
             stream = self.provisioner.run_turn(
                 session,
                 prompt,
@@ -188,6 +195,9 @@ class SessionManager:
                 )
             finally:
                 self._in_flight.discard(session_id)
+                # A turn that died without a terminal event still has its last
+                # text run buffered; commit it rather than lose it.
+                self.transcript.flush(session_id)
                 await stream.aclose()
         self.registry.touch(session_id)
 
@@ -291,7 +301,9 @@ class SessionManager:
         session = self.get(session_id)
         if session["container_id"]:
             await self.provisioner.remove(session["container_id"])
-        # Nothing will ever drain this session's channel queue again.
+        # Nothing will ever drain this session's channel queue again. The
+        # transcript stays: reading back an archived session is the point of it.
+        self.transcript.flush(session_id)
         self.streams.discard(session_id)
         return self.registry.update_session(
             session_id,
@@ -305,7 +317,9 @@ class SessionManager:
         session = self.get(session_id)
         if session["container_id"]:
             await self.provisioner.remove(session["container_id"])
+        self.transcript.discard(session_id)
         self.streams.discard(session_id)
+        self.registry.delete_session_events(session_id)
         self.registry.delete_session(session_id)
 
     async def reap_idle(self, now: datetime | None = None) -> list[str]:
