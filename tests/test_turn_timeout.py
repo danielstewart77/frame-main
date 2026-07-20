@@ -24,7 +24,7 @@ class StallingProvisioner:
         workspace.ensure()
         return Container(container_id="stalled", app_port=None)
 
-    async def run_turn(self, session, prompt, system_prompt=""):
+    async def run_turn(self, session, prompt, system_prompt="", channel_config=None):
         try:
             yield {"kind": "status", "text": "retrying provider (1/10)"}
             await asyncio.sleep(3600)

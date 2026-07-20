@@ -58,6 +58,7 @@ class Provisioner(Protocol):
         session: dict[str, Any],
         prompt: str,
         system_prompt: str = "",
+        channel_config: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]: ...
 
     async def attach_tty(self, container_id: str) -> Tty: ...
@@ -127,7 +128,11 @@ class DockerProvisioner:
         return Container(container_id=out.strip(), app_port=app_port)
 
     async def run_turn(
-        self, session: dict[str, Any], prompt: str, system_prompt: str = ""
+        self,
+        session: dict[str, Any],
+        prompt: str,
+        system_prompt: str = "",
+        channel_config: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         container_id = session.get("container_id")
         if not container_id:
@@ -138,6 +143,7 @@ class DockerProvisioner:
             session["model"],
             resume_id=session.get("resume_id"),
             system_prompt=system_prompt,
+            channel_config=channel_config,
         )
         command = " ".join(shlex.quote(a) for a in argv)
         docker_argv = ["docker", "exec", "-w", "/workspace/repo", container_id, "bash", "-lc", command]
@@ -281,6 +287,7 @@ class FakeProvisioner:
         self.stopped: list[str] = []
         self.removed: list[str] = []
         self.turns: list[tuple[str, str]] = []
+        self.channel_configs: list[str | None] = []
         self.ttys: list["FakeTty"] = []
         self.interrupted: list[str] = []
         self._counter = 0
@@ -299,11 +306,16 @@ class FakeProvisioner:
         return container
 
     async def run_turn(
-        self, session: dict[str, Any], prompt: str, system_prompt: str = ""
+        self,
+        session: dict[str, Any],
+        prompt: str,
+        system_prompt: str = "",
+        channel_config: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         if not session.get("container_id"):
             raise ProvisionError("session has no container")
         self.turns.append((session["id"], prompt))
+        self.channel_configs.append(channel_config)
         if not session.get("resume_id"):
             yield {"kind": "session", "resume_id": f"resume-{session['id'][:8]}"}
         yield {"kind": "text", "text": f"[fake {session['harness']}] "}
