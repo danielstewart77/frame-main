@@ -4,18 +4,17 @@ A chat is a thin remote that attaches to exactly one session at a time. The
 attachment is the `surface_bindings` row, not bot process state, so a restart
 or a `/switch` from the web console stays consistent.
 
-`ChatRouter` is pure: it takes a command and returns a `Reply` describing what
-the bot should render. All state changes go through a `Client`, of which there
-are two — `LocalClient` (same process as the control plane) and `HttpClient`
-(the agent-server's HTTP API). Telegram-specific IO lives in the bot entrypoint.
+`ChatRouter` is pure: it takes an already-resolved user and a command and
+returns a `Reply` describing what the bot should render. All state changes go
+through a `Client` — `LocalClient`, backed by a SessionManager in the same
+process. The Telegram supervisor runs the router in-process; the user a message
+belongs to is known from the bot's own row, so the router never resolves it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Protocol
-
-import httpx
 
 ACTIVE = "active"
 ARCHIVED = "archived"
@@ -51,7 +50,6 @@ def label_for(session: dict[str, Any]) -> str:
 
 
 class Client(Protocol):
-    def resolve_user(self, surface: str, external_id: str, display_name: str | None) -> str: ...
     def list_sessions(self, user_id: str, status: str) -> list[dict[str, Any]]: ...
     def create_session(self, user_id: str, harness: str | None, model: str | None) -> dict[str, Any]: ...
     def get_session(self, session_id: str) -> dict[str, Any] | None: ...
@@ -65,9 +63,6 @@ class LocalClient:
 
     def __init__(self, manager):
         self.manager = manager
-
-    def resolve_user(self, surface, external_id, display_name=None):
-        return self.manager.resolve_user(surface, external_id, display_name)
 
     def list_sessions(self, user_id, status=ACTIVE):
         return self.manager.registry.list_sessions(user_id, status)
@@ -88,75 +83,12 @@ class LocalClient:
         self.manager.detach(surface, external_id)
 
 
-class HttpClient:
-    """Backed by the agent-server HTTP API — for a bot in its own process.
-
-    A surface is a service principal: it carries `FRAME_SERVICE_TOKEN` on every
-    request and thereby acts for whichever user a chat identity resolves to.
-    Without the token the control plane answers 401 and the bot is inert, which
-    is the intended failure — a surface with no credential should do nothing.
-    """
-
-    def __init__(self, base_url: str, timeout: float = 30.0, service_token: str = ""):
-        self.base_url = base_url.rstrip("/")
-        headers = {"Authorization": f"Bearer {service_token}"} if service_token else {}
-        self.http = httpx.Client(base_url=self.base_url, timeout=timeout, headers=headers)
-
-    def resolve_user(self, surface, external_id, display_name=None):
-        response = self.http.post(
-            "/identities",
-            json={"surface": surface, "external_id": str(external_id), "display_name": display_name},
-        )
-        response.raise_for_status()
-        return response.json()["user_id"]
-
-    def list_sessions(self, user_id, status=ACTIVE):
-        response = self.http.get(f"/users/{user_id}/sessions", params={"status": status})
-        response.raise_for_status()
-        return response.json()
-
-    def create_session(self, user_id, harness=None, model=None):
-        response = self.http.post(
-            f"/users/{user_id}/sessions", json={"harness": harness, "model": model}
-        )
-        response.raise_for_status()
-        return response.json()
-
-    def get_session(self, session_id):
-        response = self.http.get(f"/sessions/{session_id}")
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        return response.json()
-
-    def attach(self, surface, external_id, session_id):
-        response = self.http.post(
-            f"/surfaces/{surface}/{external_id}/attach", json={"session_id": session_id}
-        )
-        response.raise_for_status()
-        return response.json()
-
-    def attached(self, surface, external_id):
-        response = self.http.get(f"/surfaces/{surface}/{external_id}/attach")
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        return response.json()
-
-    def detach(self, surface, external_id):
-        self.http.delete(f"/surfaces/{surface}/{external_id}/attach").raise_for_status()
-
-    def close(self) -> None:
-        self.http.close()
-
-
 class ChatRouter:
     def __init__(self, client: Client, surface: str = "telegram"):
         self.client = client
         self.surface = surface
 
-    def handle(self, external_id: str, text: str, display_name: str | None = None) -> Reply:
-        user_id = self.client.resolve_user(self.surface, external_id, display_name)
+    def handle(self, user_id: str, external_id: str, text: str) -> Reply:
         text = (text or "").strip()
 
         if not text.startswith("/"):

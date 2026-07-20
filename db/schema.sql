@@ -39,6 +39,19 @@ CREATE TABLE IF NOT EXISTS identities (
   PRIMARY KEY (surface, external_id)
 );
 
+-- A user's own Telegram bot. Optional and per-user: there is no shared bot and
+-- no shared token — each user pastes the token BotFather gave them, and the
+-- supervisor runs one long-poll loop per row. `owner_chat_id` locks the bot to
+-- the first chat that messages it, so a personal bot answers only its owner;
+-- changing `bot_token` re-opens that enrollment (see registry.set_telegram_bot).
+CREATE TABLE IF NOT EXISTS telegram_bots (
+  user_id       TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+  bot_token     TEXT NOT NULL,
+  owner_chat_id TEXT,                 -- the one chat allowed to drive this bot; captured on first message, then locked
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  created_at    TEXT NOT NULL
+);
+
 -- one row per task/topic session; the session owns its harness + model + container
 CREATE TABLE IF NOT EXISTS sessions (
   id           TEXT PRIMARY KEY,        -- our stable session uuid

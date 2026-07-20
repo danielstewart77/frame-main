@@ -2,8 +2,8 @@
 
 A minimal, single-box agent system: one FastAPI control plane wraps agent
 harnesses (`claude`, `codex`, ...) as sessions, one isolated workspace per user, with
-a web console and a Telegram surface. Each session runs in a pristine container;
-work persists to per-user git repos.
+a web console and an optional per-user Telegram bot. Each session runs in a
+pristine container; work persists to per-user git repos.
 
 See [DESIGN.md](DESIGN.md) for the full architecture.
 
@@ -25,15 +25,12 @@ Switching both to their real backends is configuration only; see
 .venv/bin/python -m pytest
 ```
 
-The Telegram surface is a separate process that speaks the same HTTP API. It
-authenticates as a *service* — set `FRAME_SERVICE_TOKEN` to the same value on
-both the control plane and the surface, or the API answers 401 and the bot is
-inert:
-
-```bash
-FRAME_SERVICE_TOKEN=$(openssl rand -base64 32)   # in .env, shared by both
-.venv/bin/python surfaces/telegram-bot.py
-```
+Telegram is optional and per-user. There is no shared bot and no shared token:
+each user creates a bot with BotFather and pastes its token on the console
+settings screen (`PUT /users/{id}/telegram`). The control plane supervises one
+long-poll loop per configured bot in-process, so there is nothing separate to
+run. A personal bot answers only its owner — the first chat to message it is
+enrolled and locked in.
 
 ## Authentication
 
@@ -43,8 +40,9 @@ requires a bearer token. Three kinds of caller hold one:
 - a **user** logs in at the console (`POST /auth/login`) and gets a token,
   returned in the body and as an `httponly` cookie. A user sees only their own
   sessions; another account's session id answers 404, not 403.
-- a **service** — a surface process — holds `FRAME_SERVICE_TOKEN` and acts on
-  behalf of whichever user a chat identity resolves to.
+- a **service** — the operator/admin credential — holds `FRAME_SERVICE_TOKEN`
+  and drives the fleet routes (mint and list users, resolve a chat identity to
+  an account) plus registration once the box is claimed.
 - a **session shim** inside a container holds a token minted for one session at
   spawn, and can drain that session's channel and no other.
 

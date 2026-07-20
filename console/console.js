@@ -825,6 +825,63 @@
     } catch (e) {}
   });
 
+  // --- settings ------------------------------------------------------------
+
+  const settingsEl = document.getElementById("settings");
+  const settingsOpen = document.getElementById("settings-open");
+  const settingsClose = document.getElementById("settings-close");
+  const tgStatus = document.getElementById("tg-status");
+  const tgToken = document.getElementById("tg-token");
+  const tgSave = document.getElementById("tg-save");
+  const tgClear = document.getElementById("tg-clear");
+  const tgError = document.getElementById("tg-error");
+
+  function renderTelegram(tg) {
+    if (tg && tg.configured) {
+      tgStatus.textContent = tg.owner_chat_id
+        ? "connected · owner chat " + tg.owner_chat_id
+        : "connected · message the bot to claim it as owner";
+      tgClear.hidden = false;
+    } else {
+      tgStatus.textContent = "not connected.";
+      tgClear.hidden = true;
+    }
+  }
+
+  settingsOpen.addEventListener("click", function () {
+    tgError.hidden = true;
+    tgToken.value = "";
+    settingsEl.hidden = false;
+  });
+  settingsClose.addEventListener("click", function () { settingsEl.hidden = true; });
+  settingsEl.addEventListener("click", function (e) {
+    if (e.target === settingsEl) settingsEl.hidden = true;
+  });
+
+  tgSave.addEventListener("click", async function () {
+    const token = tgToken.value.trim();
+    if (!token) {
+      tgError.hidden = false;
+      tgError.textContent = "paste a bot token first.";
+      return;
+    }
+    tgError.hidden = true;
+    try {
+      renderTelegram(await api("PUT", "/users/" + boot.user_id + "/telegram", { bot_token: token }));
+      tgToken.value = "";
+    } catch (e) {
+      tgError.hidden = false;
+      tgError.textContent = "could not save the token.";
+    }
+  });
+
+  tgClear.addEventListener("click", async function () {
+    try {
+      await api("DELETE", "/users/" + boot.user_id + "/telegram");
+      renderTelegram(null);
+    } catch (e) {}
+  });
+
   // --- login ---------------------------------------------------------------
 
   const loginEl = document.getElementById("login");
@@ -880,6 +937,8 @@
       app.dataset.rail = "collapsed";
       railExpand.hidden = false;
     }
+
+    renderTelegram(boot.telegram);
 
     await refreshList();
 

@@ -22,6 +22,7 @@
   <aside class="rail" id="rail">
     <header class="rail-head">
       <h1 class="rail-title">sessions</h1>
+      <button id="settings-open" class="icon-btn" type="button" title="settings" aria-label="settings">&#9881;</button>
       <button id="rail-collapse" class="icon-btn" type="button" title="collapse sidebar" aria-label="collapse sidebar">&laquo;</button>
     </header>
     <div class="seg" role="tablist" aria-label="session filter">
@@ -45,6 +46,27 @@
   </main>
 
 </div>
+
+<div class="overlay" id="settings" hidden>
+  <div class="overlay-card">
+    <header class="overlay-head">
+      <h2 class="overlay-title">settings</h2>
+      <button id="settings-close" class="icon-btn" type="button" title="close" aria-label="close settings">&times;</button>
+    </header>
+    <section class="settings-section">
+      <h3 class="settings-heading">telegram</h3>
+      <p id="tg-status" class="settings-status"></p>
+      <input id="tg-token" type="password" autocomplete="off" placeholder="bot token" aria-label="telegram bot token">
+      <div class="settings-actions">
+        <button id="tg-save" class="action-btn" type="button">save</button>
+        <button id="tg-clear" class="action-btn danger" type="button">disconnect</button>
+      </div>
+      <p class="settings-hint">Create a bot with &#64;BotFather and paste its token here. The first chat to message the bot becomes its owner.</p>
+      <p id="tg-error" class="login-error" hidden></p>
+    </section>
+  </div>
+</div>
+
 <script src="/console/static/console.js"></script>
 </body>
 </html>

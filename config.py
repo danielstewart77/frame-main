@@ -94,15 +94,22 @@ class Settings:
     default_harness: str = field(default_factory=lambda: os.getenv("FRAME_DEFAULT_HARNESS", "claude"))
     default_model: str = field(default_factory=lambda: os.getenv("FRAME_DEFAULT_MODEL", "opus"))
 
-    telegram_bot_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
     server_url: str = field(
         default_factory=lambda: os.getenv("FRAME_SERVER_URL", "http://127.0.0.1:8500")
     )
 
-    # The shared secret a surface process (the Telegram bot) presents to act for
-    # any user. Empty means no service principal exists — the surfaces cannot
-    # authenticate and only console logins work. Set it in `.env` in any real
-    # deployment; the surfaces read the same var.
+    # How often the Telegram supervisor reconciles running pollers against the
+    # `telegram_bots` table — starting one for a new bot, restarting one whose
+    # token changed, stopping one whose row was removed.
+    telegram_reconcile_seconds: int = field(
+        default_factory=lambda: int(os.getenv("FRAME_TELEGRAM_RECONCILE_SECONDS", "15"))
+    )
+
+    # The operator/registration credential. It mints and lists users, resolves a
+    # chat identity to an account, and can register further accounts once the box
+    # is claimed — the fleet-admin authority, not any one user's. Empty means no
+    # such principal exists and only console logins work. Set it in `.env` in any
+    # real deployment.
     service_token: str = field(default_factory=lambda: os.getenv("FRAME_SERVICE_TOKEN", ""))
     # How long a console login stays valid before it must be re-entered.
     auth_token_ttl_hours: int = field(

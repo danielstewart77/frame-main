@@ -63,6 +63,42 @@ button, input, select, textarea { font: inherit; color: inherit; }
   text-align: center;
 }
 
+/* --- settings overlay --------------------------------------------------- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 8, 11, 0.72);
+}
+.overlay-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(360px, 88vw);
+  padding: 20px 22px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.overlay-head { display: flex; align-items: center; gap: 8px; }
+.overlay-title { margin: 0; flex: 1; font-size: 15px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+
+.settings-section { display: flex; flex-direction: column; gap: 8px; }
+.settings-heading { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.settings-status { margin: 0; color: var(--ink); }
+.settings-section input {
+  padding: 9px 11px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.settings-section input:focus { outline: 1px solid var(--accent); }
+.settings-actions { display: flex; gap: 6px; }
+.settings-hint { margin: 0; color: var(--dim); font-size: 11px; }
+
 .app {
   display: grid;
   grid-template-columns: 260px 1fr;
