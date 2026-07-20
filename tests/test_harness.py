@@ -19,6 +19,16 @@ def test_claude_argv_resumes_and_appends_system_prompt():
     assert argv[argv.index("--append-system-prompt") + 1] == "be brief"
 
 
+def test_both_harnesses_spawn_with_approvals_off():
+    # Nobody is at a terminal inside the container, so a prompt would hang the
+    # turn rather than gate it. The container is the sandbox boundary.
+    assert "--dangerously-skip-permissions" in harness.build_argv("claude", "go", "opus")
+    assert "--dangerously-skip-permissions" in harness.build_argv("claude", None, "opus")
+    assert "--dangerously-bypass-approvals-and-sandbox" in harness.build_argv(
+        "codex", "go", "gpt-5"
+    )
+
+
 def test_claude_argv_omits_channel_flags_without_a_config():
     argv = harness.build_argv("claude", "go", "opus")
     assert "--mcp-config" not in argv

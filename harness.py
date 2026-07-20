@@ -61,6 +61,12 @@ def build_argv(
     running session; the flag is `--dangerously-load-development-channels`
     because channels are a research preview and only Anthropic-allowlisted
     plugins register without it.
+
+    Both harnesses spawn with approvals off. A session runs unattended inside a
+    container with nobody at a terminal, so a prompt has no one to answer it: it
+    would hang the turn until something timed out, and a fleet of sessions would
+    come back mostly stopped rather than mostly finished. The container is the
+    sandbox boundary — the harness does not need a second one inside it.
     """
     if harness == CLAUDE:
         argv = ["claude", "-p"]
@@ -73,6 +79,7 @@ def build_argv(
             "stream-json",
             "--include-partial-messages",
             "--verbose",
+            "--dangerously-skip-permissions",
             "--model",
             model,
         ]
@@ -92,7 +99,14 @@ def build_argv(
     if harness == CODEX:
         if prompt is None:
             raise UnknownHarness("codex has no stdin-driven form")
-        argv = ["codex", "exec", "--json", "--model", model]
+        argv = [
+            "codex",
+            "exec",
+            "--json",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--model",
+            model,
+        ]
         if resume_id:
             argv += ["resume", resume_id]
         if system_prompt:
