@@ -37,6 +37,7 @@ import voice as voice_mod
 from config import Settings, load
 from sandbox.provision import ProvisionError, get_provisioner
 from sessions import SessionError, SessionManager, UnknownSession
+from surfaces.telegram import TelegramSupervisor
 
 SURFACES = {"telegram", "web"}
 CONSOLE_DIR = Path(__file__).resolve().parent / "console"
@@ -109,6 +110,10 @@ class SpeakRequest(BaseModel):
     voice: str | None = None
 
 
+class TelegramConfig(BaseModel):
+    bot_token: str = Field(min_length=1)
+
+
 # --- app --------------------------------------------------------------------
 
 
@@ -137,12 +142,18 @@ async def _reap_loop(app: FastAPI) -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     reaper = asyncio.create_task(_reap_loop(app))
+    supervisor = TelegramSupervisor(
+        app.state.manager, app.state.registry, app.state.settings
+    )
+    app.state.telegram = supervisor
+    telegram = asyncio.create_task(supervisor.run())
     try:
         yield
     finally:
-        reaper.cancel()
-        with suppress(asyncio.CancelledError):
-            await reaper
+        for task in (reaper, telegram):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
         await app.state.proxy_client.aclose()
 
 
@@ -202,10 +213,10 @@ def create_app(
         return who
 
     def service_only(who: auth_mod.Principal = Depends(principal)) -> auth_mod.Principal:
-        """Fleet-wide routes: minting users, resolving a chat to an account.
+        """Fleet-wide routes: minting and listing users, resolving a chat to an account.
 
-        A logged-in user must not be able to do these — they are the surface
-        processes' job, and the surface holds the service token.
+        A logged-in user is not the fleet operator and must not reach these;
+        they take the service token, the operator/admin credential.
         """
         if not who.is_service:
             raise HTTPException(403, "service credentials required")
@@ -267,7 +278,7 @@ def create_app(
 
         Open only while no account exists, so a fresh box can be claimed by the
         operator standing in front of it. After that it takes the service token,
-        which is the same authority that runs the surfaces.
+        the operator/admin credential.
         """
         if registry.count_credentials():
             who = _identify(_presented(request.headers, request.cookies))
@@ -400,6 +411,49 @@ def create_app(
         """Console layout restore: which sessions are open and in what state."""
         _own_user(who, user_id)
         return registry.open_frames(user_id)
+
+    # --- per-user telegram bot ---------------------------------------------
+
+    def _telegram_summary(user_id: str) -> dict[str, Any]:
+        """The bot's state, minus the token — the token is write-only over the API."""
+        bot = registry.get_telegram_bot(user_id)
+        if not bot:
+            return {"configured": False, "enabled": False, "owner_chat_id": None}
+        return {
+            "configured": True,
+            "enabled": bool(bot["enabled"]),
+            "owner_chat_id": bot["owner_chat_id"],
+        }
+
+    @app.get("/users/{user_id}/telegram")
+    def get_telegram(
+        user_id: str, who: auth_mod.Principal = Depends(principal)
+    ) -> dict[str, Any]:
+        _own_user(who, user_id)
+        return _telegram_summary(user_id)
+
+    @app.put("/users/{user_id}/telegram")
+    def put_telegram(
+        user_id: str,
+        body: TelegramConfig,
+        who: auth_mod.Principal = Depends(principal),
+    ) -> dict[str, Any]:
+        """Set (or replace) this user's bot token. The supervisor picks it up on
+        its next reconcile; a changed token re-opens owner enrollment."""
+        _own_user(who, user_id)
+        token = body.bot_token.strip()
+        if not token:
+            raise HTTPException(400, "bot_token must not be blank")
+        registry.set_telegram_bot(user_id, token)
+        return _telegram_summary(user_id)
+
+    @app.delete("/users/{user_id}/telegram", status_code=204)
+    def delete_telegram(
+        user_id: str, who: auth_mod.Principal = Depends(principal)
+    ) -> Response:
+        _own_user(who, user_id)
+        registry.clear_telegram_bot(user_id)
+        return Response(status_code=204)
 
     @app.get("/sessions/{session_id}")
     def get_session(
@@ -680,6 +734,7 @@ def create_app(
             "username": credential.get("username"),
             "sidebar_collapsed": registry.sidebar_collapsed("web", user_id),
             "frames": registry.open_frames(user_id),
+            "telegram": _telegram_summary(user_id),
             "harnesses": [harness_mod.CLAUDE, harness_mod.CODEX],
             "default_harness": settings.default_harness,
             "default_model": settings.default_model,

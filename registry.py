@@ -111,6 +111,53 @@ class Registry:
         self.link_identity(surface, external_id, user["user_id"])
         return user["user_id"]
 
+    # --- telegram bots -----------------------------------------------------
+
+    def set_telegram_bot(self, user_id: str, bot_token: str) -> None:
+        """Give a user a bot, or replace the token on the one they have.
+
+        A new token value re-opens owner enrollment: `owner_chat_id` drops to
+        NULL and `enabled` back to 1, so the first chat to message the fresh
+        bot claims it. Re-saving the same token leaves the existing owner in
+        place — it is not a way to hand the bot to a different chat.
+        """
+        existing = self.get_telegram_bot(user_id)
+        if existing and existing["bot_token"] == bot_token:
+            return
+        self.conn.execute(
+            """INSERT INTO telegram_bots (user_id, bot_token, owner_chat_id, enabled, created_at)
+               VALUES (?,?,NULL,1,?)
+               ON CONFLICT(user_id) DO UPDATE
+                 SET bot_token=excluded.bot_token, owner_chat_id=NULL, enabled=1""",
+            (user_id, bot_token, now()),
+        )
+        self.conn.commit()
+
+    def clear_telegram_bot(self, user_id: str) -> None:
+        self.conn.execute("DELETE FROM telegram_bots WHERE user_id=?", (user_id,))
+        self.conn.commit()
+
+    def get_telegram_bot(self, user_id: str) -> dict[str, Any] | None:
+        return _one(
+            self.conn.execute("SELECT * FROM telegram_bots WHERE user_id=?", (user_id,))
+        )
+
+    def list_telegram_bots(self) -> list[dict[str, Any]]:
+        """Every enabled bot the supervisor should be running a poller for."""
+        return _all(
+            self.conn.execute(
+                "SELECT user_id, bot_token, owner_chat_id FROM telegram_bots WHERE enabled=1"
+            )
+        )
+
+    def set_telegram_owner_chat(self, user_id: str, chat_id: str) -> None:
+        """Lock a bot to the chat that first messaged it."""
+        self.conn.execute(
+            "UPDATE telegram_bots SET owner_chat_id=? WHERE user_id=?",
+            (str(chat_id), user_id),
+        )
+        self.conn.commit()
+
     # --- credentials + tokens ----------------------------------------------
 
     def set_credential(self, user_id: str, username: str, password_hash: str) -> None:

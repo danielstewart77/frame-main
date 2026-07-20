@@ -66,19 +66,18 @@ curl -sX POST localhost:8500/voice/speak -H 'content-type: application/json' \
 curl -sX POST localhost:8500/voice/transcribe -F file=@/tmp/tts.mp3
 ```
 
-## 4. Start the Telegram surface
+## 4. Connect a Telegram bot
 
-```
-TELEGRAM_BOT_TOKEN=<token>
-```
+Telegram is per-user and supervised in-process — there is no separate surface to
+start. Create a bot with BotFather, then paste its token on the console settings
+screen (or `PUT /users/{id}/telegram` with `{"bot_token": "..."}`). The
+supervisor picks it up on its next reconcile.
 
-```bash
-python surfaces/telegram-bot.py
-```
-
-`/new`, then a plain message, should stream a reply into a single edited
-message. The bot holds no attachment state of its own — it reads
-`surface_bindings` through the API, so restarting it mid-conversation is safe.
+The first chat to message the bot is enrolled as its owner and locked in; every
+other chat is ignored. `/new`, then a plain message, should stream a reply into a
+single edited message. The poller holds no attachment state of its own — it
+reads `surface_bindings` through the manager, so a restart mid-conversation is
+safe.
 
 ## Known gaps at cutover
 

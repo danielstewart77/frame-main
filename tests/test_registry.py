@@ -109,3 +109,54 @@ def test_used_app_ports_reports_allocations(registry, user):
     assert registry.used_app_ports() == set()
     registry.update_session(session["id"], app_port=9601)
     assert registry.used_app_ports() == {9601}
+
+
+# --- telegram bots ---------------------------------------------------------
+
+
+def test_set_and_get_telegram_bot(registry, user):
+    assert registry.get_telegram_bot(user["user_id"]) is None
+    registry.set_telegram_bot(user["user_id"], "bot-token-1")
+    bot = registry.get_telegram_bot(user["user_id"])
+    assert bot["bot_token"] == "bot-token-1"
+    assert bot["owner_chat_id"] is None
+    assert bot["enabled"] == 1
+
+
+def test_owner_chat_locks_in_then_survives_a_re_save(registry, user):
+    registry.set_telegram_bot(user["user_id"], "bot-token-1")
+    registry.set_telegram_owner_chat(user["user_id"], "555")
+    # Re-saving the same token must not evict the enrolled owner.
+    registry.set_telegram_bot(user["user_id"], "bot-token-1")
+    assert registry.get_telegram_bot(user["user_id"])["owner_chat_id"] == "555"
+
+
+def test_changing_the_token_resets_the_owner(registry, user):
+    registry.set_telegram_bot(user["user_id"], "bot-token-1")
+    registry.set_telegram_owner_chat(user["user_id"], "555")
+    registry.set_telegram_bot(user["user_id"], "bot-token-2")
+    bot = registry.get_telegram_bot(user["user_id"])
+    assert bot["bot_token"] == "bot-token-2"
+    assert bot["owner_chat_id"] is None
+    assert bot["enabled"] == 1
+
+
+def test_clear_telegram_bot_removes_the_row(registry, user):
+    registry.set_telegram_bot(user["user_id"], "bot-token-1")
+    registry.clear_telegram_bot(user["user_id"])
+    assert registry.get_telegram_bot(user["user_id"]) is None
+
+
+def test_list_telegram_bots_returns_only_enabled(registry):
+    one = registry.create_user("One")
+    two = registry.create_user("Two")
+    registry.set_telegram_bot(one["user_id"], "token-one")
+    registry.set_telegram_bot(two["user_id"], "token-two")
+    registry.conn.execute(
+        "UPDATE telegram_bots SET enabled=0 WHERE user_id=?", (two["user_id"],)
+    )
+    registry.conn.commit()
+
+    listed = registry.list_telegram_bots()
+    assert [b["user_id"] for b in listed] == [one["user_id"]]
+    assert listed[0]["bot_token"] == "token-one"

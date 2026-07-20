@@ -48,7 +48,7 @@ frame-main/
 │   └── entrypoint.sh        # clone session branch, install hook, await exec'd turns
 ├── surfaces/
 │   ├── chat.py              # surface-agnostic engage/disengage routing
-│   └── telegram-bot.py      # chat_id → user_id; Telegram IO only
+│   └── telegram.py          # in-process supervisor: one long-poll bot per user
 ├── proxy.py                 # per-session reverse proxy for the browser pane
 ├── console/                 # web console: index.html + console.css + console.js
 ├── hooks/
@@ -69,7 +69,7 @@ history, memory, identity — lives on the host under `users/<user_id>/` and is
 mounted (memory, identity) or pushed to (`origin.git`) from the container.
 
 **Naming.** Component, file, and service names use hyphens, never underscores
-(`agent-server`, `telegram-bot`, `stop-commit.sh`) — underscores are painful over
+(`agent-server`, `stop-commit.sh`) — underscores are painful over
 voice. Hyphenated `.py` files (`agent-server.py`) are **entrypoints run
 directly** (`python agent-server.py`), never imported; importable logic lives in
 single-word modules so no module name ever needs an underscore. SQL columns and
@@ -489,9 +489,15 @@ list rather than trying to tile a grid on a small screen.
 
 ## Telegram surface (engage / disengage)
 
-One bot **per user**, not per agent. A Telegram chat is a thin remote that
-*attaches* to one session at a time — this is the trickiest part of the system, so
-it's specified explicitly.
+One bot **per user**, not per agent, and optional: there is no shared bot and no
+shared token. Each user creates a bot with BotFather and pastes its token on the
+console settings screen (`PUT /users/{id}/telegram`); the control plane
+supervises one long-poll loop per configured bot **in-process**, reconciling on a
+timer as tokens are added, changed, or removed. A personal bot answers only its
+owner — the first chat to message it is enrolled and locked in, and every other
+chat is dropped. A Telegram chat is a thin remote that *attaches* to one session
+at a time — this is the trickiest part of the system, so it's specified
+explicitly.
 
 - **List.** `/agents` (or a persistent menu button) returns an inline keyboard of
   the user's **active** sessions, one button each labelled by title. `/archived`
@@ -532,9 +538,9 @@ Three principals reach the API, and they are not the same. A **user** logs in at
 the console and holds a token — returned once in the body and as an `httponly`
 cookie — that is scoped to their own account; another user's session id answers
 404, not 403, because confirming an id exists is itself a leak across accounts. A
-**service** is a surface process (the Telegram bot) holding `FRAME_SERVICE_TOKEN`;
-it acts for whichever user a chat identity resolves to, which is why minting
-users and resolving identities are service-only. A **session shim** inside a
+**service** is the operator/admin credential holding `FRAME_SERVICE_TOKEN`; it
+drives the fleet routes and can register accounts once the box is claimed, which
+is why minting users and resolving identities are service-only. A **session shim** inside a
 container holds a bearer minted for one session at spawn and rotated on every
 respawn; it may drain that session's channel and no other, so a compromised
 container cannot reach its neighbours.

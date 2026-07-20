@@ -8,8 +8,11 @@ Three kinds of caller reach the API and they are not the same principal:
 
 * a **user** — someone who logged in at the console. Sees only their own
   sessions.
-* a **service** — a surface process (the Telegram bot) that acts on behalf of
-  whichever user a chat identity resolves to. Holds `FRAME_SERVICE_TOKEN`.
+* a **service** — the operator/admin credential, used for fleet routes (mint
+  and list users, resolve a chat identity to an account) and to register
+  further accounts once the box is claimed. Holds `FRAME_SERVICE_TOKEN`. It is
+  the fleet-admin authority, not any one user, so `owns` treats it as
+  entitled to every account.
 * a **session shim** — the channel client inside a sandbox container. Holds a
   token minted for one session and can speak for that session alone, which is
   what keeps a compromised container out of its neighbours.
@@ -93,7 +96,7 @@ class Principal:
         return self.kind == SERVICE
 
     def owns(self, user_id: str) -> bool:
-        """A service acts for everyone; a user acts only for themselves."""
+        """The operator acts for everyone; a user acts only for themselves."""
         return self.is_service or self.user_id == user_id
 
 
