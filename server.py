@@ -8,16 +8,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator
 
+import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.websockets import WebSocketDisconnect
 
-import httpx
-
+import harness as harness_mod
 import proxy as proxy_mod
 import registry as registry_mod
 import voice as voice_mod
@@ -26,6 +29,8 @@ from sandbox.provision import ProvisionError, get_provisioner
 from sessions import SessionError, SessionManager, UnknownSession
 
 SURFACES = {"telegram", "web"}
+CONSOLE_DIR = Path(__file__).resolve().parent / "console"
+CONSOLE_COOKIE = "frame_console_id"
 
 
 # --- request bodies ---------------------------------------------------------
@@ -212,6 +217,11 @@ def create_app(
         except WebSocketDisconnect:
             return
 
+    @app.post("/sessions/{session_id}/interrupt")
+    async def interrupt_session(session_id: str, manager: SessionManager = Depends(get_manager)):
+        _resolve(manager, session_id)
+        return {"interrupted": await manager.interrupt(session_id)}
+
     @app.post("/sessions/{session_id}/start")
     async def start_session(session_id: str, manager: SessionManager = Depends(get_manager)):
         _resolve(manager, session_id)
@@ -253,6 +263,41 @@ def create_app(
             "clone_url": workspace.clone_url(),
             "branch": session["branch"],
             "command": f"git clone -b {session['branch']} {workspace.clone_url()}",
+        }
+
+    # --- the web console -----------------------------------------------------
+
+    @app.get("/console")
+    def console_page(request: Request) -> Response:
+        """The console shell. Issues the surface identity cookie on first visit."""
+        response = FileResponse(CONSOLE_DIR / "index.html")
+        if not request.cookies.get(CONSOLE_COOKIE):
+            response.set_cookie(
+                CONSOLE_COOKIE,
+                uuid.uuid4().hex,
+                max_age=60 * 60 * 24 * 365,
+                httponly=True,
+                samesite="lax",
+            )
+        return response
+
+    @app.get("/console/bootstrap")
+    def console_bootstrap(
+        request: Request, manager: SessionManager = Depends(get_manager)
+    ) -> dict[str, Any]:
+        """Everything the console needs to restore itself: identity + layout."""
+        external_id = request.cookies.get(CONSOLE_COOKIE)
+        if not external_id:
+            raise HTTPException(400, "no console identity cookie; reload /console")
+        user_id = manager.resolve_user("web", external_id, "console")
+        return {
+            "user_id": user_id,
+            "external_id": external_id,
+            "sidebar_collapsed": registry.sidebar_collapsed("web", external_id),
+            "frames": registry.open_frames(user_id),
+            "harnesses": [harness_mod.CLAUDE, harness_mod.CODEX],
+            "default_harness": settings.default_harness,
+            "default_model": settings.default_model,
         }
 
     # --- sidecar panes: browser + full terminal ------------------------------
@@ -393,6 +438,9 @@ def create_app(
             raise HTTPException(502, str(exc)) from exc
         return Response(content=audio, media_type="audio/mpeg")
 
+    app.mount(
+        "/console/static", StaticFiles(directory=CONSOLE_DIR), name="console-static"
+    )
     return app
 
 

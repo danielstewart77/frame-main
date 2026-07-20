@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>frame</title>
+<link rel="stylesheet" href="/console/static/console.css">
+</head>
+<body>
+<div class="app" id="app" data-view="stage" data-rail="expanded">
+
+  <aside class="rail" id="rail">
+    <header class="rail-head">
+      <h1 class="rail-title">sessions</h1>
+      <button id="rail-collapse" class="icon-btn" type="button" title="collapse sidebar" aria-label="collapse sidebar">&laquo;</button>
+    </header>
+    <div class="seg" role="tablist" aria-label="session filter">
+      <button id="tab-active" class="seg-btn is-active" type="button" role="tab" aria-selected="true">active</button>
+      <button id="tab-archived" class="seg-btn" type="button" role="tab" aria-selected="false">archived</button>
+    </div>
+    <div class="spawn">
+      <select id="spawn-harness" aria-label="harness"></select>
+      <input id="spawn-model" type="text" aria-label="model" placeholder="model">
+      <button id="spawn" class="action-btn" type="button" title="new session">+</button>
+    </div>
+    <div id="list" class="list" aria-live="polite"></div>
+    <p id="list-empty" class="list-empty" hidden>no sessions.</p>
+  </aside>
+
+  <main class="stage" id="stage">
+    <button id="rail-expand" class="rail-expand" type="button" hidden aria-label="show sidebar">sessions &raquo;</button>
+    <div id="grid" class="grid" data-count="0"></div>
+    <div id="dock" class="dock" hidden aria-label="minimized frames"></div>
+    <p id="grid-empty" class="grid-empty">open a session from the sidebar, or hit + to start one.</p>
+  </main>
+
+</div>
+<script src="/console/static/console.js"></script>
+</body>
+</html>
