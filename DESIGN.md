@@ -188,6 +188,7 @@ session's life rather than respawned per turn:
 ```
 claude -p --input-format stream-json --output-format stream-json \
        --include-partial-messages \
+       --dangerously-skip-permissions \
        --mcp-config /opt/frame/mcp.json \
        --dangerously-load-development-channels server:frame \
        [--resume <resume_id>] \
@@ -225,12 +226,6 @@ batch process cannot have:
 - **Outbound reply.** The channel exposes a `reply` tool, so the agent routes
   messages back to the originating surface mid-turn rather than only in its
   final result.
-- **Permission relay.** Declaring `claude/channel/permission` forwards tool
-  approval prompts to the surface with a five-letter `request_id`; the web
-  console or Telegram answers `yes <id>` and the verdict returns as
-  `notifications/claude/channel/permission`. This is what makes an unattended
-  containerised session approvable without falling back to
-  `--dangerously-skip-permissions`.
 
 `sandbox/harness_process.py` holds that process: one `docker exec -i` per
 session, prompts written to stdin as stream-json, one reader task over stdout.
@@ -246,7 +241,30 @@ and has no stdin form, so that harness stays on the per-turn path.
 
 Gate inbound events on **sender identity** before emitting a notification — an
 ungated channel is a prompt-injection path straight into the session's context,
-and permission relay hands whoever can reach it authority over tool use.
+and a session running with approvals off will act on whatever lands there.
+
+### Sessions run unattended
+
+Both harnesses spawn with approvals off: `--dangerously-skip-permissions` for
+claude, `--dangerously-bypass-approvals-and-sandbox` for codex. A session starts,
+runs, and finishes without asking anyone anything.
+
+This is not a shortcut around a safety gate; it is the only coherent reading of
+the deployment. Nobody is at a terminal inside the container, so an approval
+prompt has no one to answer it — it stalls the turn until something times out,
+and a timeout has to guess a verdict from silence. Guessing *deny* stops the
+session; guessing *allow* is the flag with extra steps and a delay. Neither is
+better than not asking. The failure mode that matters here is a fleet of a dozen
+sessions where eleven come back stopped because no human clicked anything, and
+the operator's attention is the scarce resource the whole design is spending.
+
+The sandbox boundary is therefore the **container**, not an in-harness prompt: a
+session gets a workspace, a network position, and credentials, and whatever it
+can reach with those it may use without asking. Narrowing what a session may do
+means narrowing that grant — a tighter mount, a scoped token, a different network
+— not interposing a question. Correspondingly, an approval prompt is not
+available as a containment mechanism, so anything a session must not do has to be
+made unreachable rather than merely gated.
 
 Constraints to hold in mind:
 
