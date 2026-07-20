@@ -65,6 +65,16 @@ class TurnRequest(BaseModel):
     prompt: str = Field(min_length=1)
 
 
+class ChannelEvent(BaseModel):
+    content: str = Field(min_length=1)
+    meta: dict[str, str] = Field(default_factory=dict)
+
+
+class ChannelReply(BaseModel):
+    chat_id: str
+    text: str
+
+
 class AttachRequest(BaseModel):
     session_id: str
 
@@ -199,9 +209,26 @@ def create_app(
 
     @app.websocket("/sessions/{session_id}/stream")
     async def stream_socket(websocket: WebSocket, session_id: str) -> None:
-        """The frame's default live stream: send a prompt, receive turn events."""
+        """The frame's live stream: everything the session emits, whoever started it.
+
+        The socket subscribes rather than drives. A prompt sent over it starts a
+        turn in the background and the events come back the same way a
+        channel-opened turn does, so a frame sees work it didn't initiate.
+        """
         manager: SessionManager = websocket.app.state.manager
         await websocket.accept()
+        try:
+            subscription = manager.subscribe(session_id)
+        except SessionError as exc:
+            await websocket.send_json({"kind": "error", "text": str(exc)})
+            await websocket.close()
+            return
+
+        async def pump() -> None:
+            async for event in subscription:
+                await websocket.send_json(event)
+
+        pumping = asyncio.create_task(pump())
         try:
             while True:
                 message = await websocket.receive_json()
@@ -209,13 +236,43 @@ def create_app(
                 if not prompt:
                     await websocket.send_json({"kind": "error", "text": "empty prompt"})
                     continue
-                try:
-                    async for event in manager.turn(session_id, prompt):
-                        await websocket.send_json(event)
-                except SessionError as exc:
-                    await websocket.send_json({"kind": "error", "text": str(exc)})
+                manager.run_turn_in_background(session_id, prompt)
         except WebSocketDisconnect:
             return
+        finally:
+            subscription.close()
+            pumping.cancel()
+
+    @app.get("/sessions/{session_id}/channel/events")
+    async def channel_events(
+        session_id: str, timeout: float = 60.0, manager: SessionManager = Depends(get_manager)
+    ):
+        """Long poll drained by the container's stdio shim."""
+        _resolve(manager, session_id)
+        return {"events": await manager.channel_events(session_id, timeout)}
+
+    @app.post("/sessions/{session_id}/channel/reply")
+    async def channel_reply(
+        session_id: str, body: ChannelReply, manager: SessionManager = Depends(get_manager)
+    ):
+        """A reply the agent routed back out through its channel."""
+        _resolve(manager, session_id)
+        return manager.channel_reply(session_id, body.chat_id, body.text)
+
+    @app.post("/sessions/{session_id}/channel/deliver", status_code=202)
+    async def channel_deliver(
+        session_id: str, body: ChannelEvent, manager: SessionManager = Depends(get_manager)
+    ):
+        """Push an event into a running session — the inbound wake path.
+
+        Callers are trusted by the time they reach here: this is the control
+        plane's own boundary, and the container never decides who may write.
+        """
+        _resolve(manager, session_id)
+        try:
+            return manager.deliver(session_id, body.content, body.meta)
+        except SessionError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.post("/sessions/{session_id}/interrupt")
     async def interrupt_session(session_id: str, manager: SessionManager = Depends(get_manager)):

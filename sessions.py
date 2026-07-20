@@ -13,9 +13,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
 import registry as registry_mod
+from bus import SessionStreams, Subscription
 from config import Settings
 from sandbox.provision import Provisioner, allocate_port
 from workspace import Workspace
+
+# How long the container's shim holds a poll open before reissuing it.
+CHANNEL_POLL_TIMEOUT_SECONDS = 60.0
 
 
 class SessionError(RuntimeError):
@@ -37,6 +41,10 @@ class SessionManager:
         self.settings = settings
         self.provisioner = provisioner
         self.semaphore = asyncio.Semaphore(settings.max_concurrent_sessions)
+        self.streams = SessionStreams()
+        # Turns started by a channel event have no requester holding the
+        # generator open, so the manager owns them until they finish.
+        self._background: set[asyncio.Task[None]] = set()
 
     # --- users -------------------------------------------------------------
 
@@ -109,7 +117,11 @@ class SessionManager:
             "FRAME_HARNESS": session["harness"],
             "FRAME_MODEL": session["model"],
             "GIT_ORIGIN": "/origin.git",
+            # Where the channel shim calls back to reach the control plane.
+            "FRAME_CHANNEL_URL": self.settings.channel_url,
         }
+        if self.settings.channel_token:
+            env["FRAME_CHANNEL_TOKEN"] = self.settings.channel_token
         if self.settings.anthropic_base_url:
             env["ANTHROPIC_BASE_URL"] = self.settings.anthropic_base_url
         if self.settings.anthropic_auth_token:
@@ -135,13 +147,21 @@ class SessionManager:
     async def turn(self, session_id: str, prompt: str) -> AsyncIterator[dict[str, Any]]:
         """Run one turn, streaming normalised events and persisting `resume_id`.
 
-        Bounded by `turn_timeout_seconds` — an unreachable provider otherwise
-        keeps the harness retrying and the frame streaming nothing.
+        Every event is also published to the session's bus, so a surface watching
+        the session sees turns it didn't start — including ones a channel event
+        opened. Bounded by `turn_timeout_seconds`: an unreachable provider
+        otherwise keeps the harness retrying and the frame streaming nothing.
         """
         session = await self.ensure_running(session_id)
         timeout = self.settings.turn_timeout_seconds
+        bus = self.streams.bus(session_id)
         async with self.semaphore:
-            stream = self.provisioner.run_turn(session, prompt, self.system_prompt(session))
+            stream = self.provisioner.run_turn(
+                session,
+                prompt,
+                self.system_prompt(session),
+                channel_config=self.settings.channel_config_path,
+            )
             try:
                 while True:
                     try:
@@ -150,15 +170,71 @@ class SessionManager:
                         break
                     if event["kind"] == "session" and event.get("resume_id"):
                         self.registry.update_session(session_id, resume_id=event["resume_id"])
+                    bus.publish(event)
                     yield event
             except asyncio.TimeoutError:
-                yield {
+                event = {
                     "kind": "error",
                     "text": f"turn timed out after {timeout}s with no output",
                 }
+                bus.publish(event)
+                yield event
             finally:
                 await stream.aclose()
         self.registry.touch(session_id)
+
+    # --- streams -----------------------------------------------------------
+
+    def subscribe(self, session_id: str) -> Subscription:
+        """Watch everything a session emits, whoever started it."""
+        self.get(session_id)
+        return self.streams.bus(session_id).subscribe()
+
+    def run_turn_in_background(self, session_id: str, prompt: str) -> "asyncio.Task[None]":
+        """Start a turn nobody is holding open, and fan it out to the bus."""
+
+        async def drive() -> None:
+            try:
+                async for _ in self.turn(session_id, prompt):
+                    pass
+            except SessionError as exc:
+                self.streams.publish(session_id, {"kind": "error", "text": str(exc)})
+
+        task = asyncio.create_task(drive())
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return task
+
+    # --- channel -----------------------------------------------------------
+
+    def deliver(
+        self, session_id: str, content: str, meta: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Queue an inbound event for the session's shim to collect.
+
+        The control plane is the only component that knows about users, so
+        allowlisting happens before this call, never in the container.
+        """
+        session = self.get(session_id)
+        if session["status"] == registry_mod.ARCHIVED:
+            raise SessionError("cannot deliver to an archived session")
+        queue = self.streams.channel(session_id)
+        queue.put(content, meta)
+        return {"queued": queue.depth}
+
+    async def channel_events(
+        self, session_id: str, timeout: float = CHANNEL_POLL_TIMEOUT_SECONDS
+    ) -> list[dict[str, Any]]:
+        """The shim's long poll. Empty on timeout so it reissues cleanly."""
+        self.get(session_id)
+        return await self.streams.channel(session_id).take(timeout)
+
+    def channel_reply(self, session_id: str, chat_id: str, text: str) -> dict[str, Any]:
+        """A reply the agent routed back out through the channel."""
+        self.get(session_id)
+        event = {"kind": "reply", "chat_id": chat_id, "text": text}
+        self.streams.publish(session_id, event)
+        return event
 
     async def attach_tty(self, session_id: str) -> Any:
         """An interactive shell on the session's container, for the TUI pane."""
@@ -193,6 +269,8 @@ class SessionManager:
         session = self.get(session_id)
         if session["container_id"]:
             await self.provisioner.remove(session["container_id"])
+        # Nothing will ever drain this session's channel queue again.
+        self.streams.discard(session_id)
         return self.registry.update_session(
             session_id,
             container_id=None,
@@ -205,6 +283,7 @@ class SessionManager:
         session = self.get(session_id)
         if session["container_id"]:
             await self.provisioner.remove(session["container_id"])
+        self.streams.discard(session_id)
         self.registry.delete_session(session_id)
 
     async def reap_idle(self, now: datetime | None = None) -> list[str]:

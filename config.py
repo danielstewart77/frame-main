@@ -69,6 +69,16 @@ class Settings:
         default_factory=lambda: os.getenv("AZURE_WHISPER_DEPLOYMENT", "whisper")
     )
 
+    # Channel. The URL is what the container's shim calls back on, so it is the
+    # host as seen from inside the sandbox, not the control plane's own bind.
+    channel_url: str = field(
+        default_factory=lambda: os.getenv("FRAME_CHANNEL_URL", "http://host.docker.internal:8500")
+    )
+    channel_token: str = field(default_factory=lambda: os.getenv("FRAME_CHANNEL_TOKEN", ""))
+    channel_config_path: str = field(
+        default_factory=lambda: os.getenv("FRAME_CHANNEL_CONFIG", "/opt/frame/mcp.json")
+    )
+
     # Harness credentials handed to the container at spawn time.
     anthropic_base_url: str = field(default_factory=lambda: os.getenv("ANTHROPIC_BASE_URL", ""))
     anthropic_auth_token: str = field(

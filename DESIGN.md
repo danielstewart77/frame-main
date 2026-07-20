@@ -276,7 +276,11 @@ PATCH  /sessions/{id}                           {title?, color?, status?, frame_
 DELETE /sessions/{id}
 
 POST   /sessions/{id}/turn                      {prompt} -> ndjson event stream
-WS     /sessions/{id}/stream                    send {prompt}, receive events
+WS     /sessions/{id}/stream                    subscribe to everything the session emits;
+                                                send {prompt} to start a turn
+POST   /sessions/{id}/channel/deliver           {content, meta?} inbound wake -> {queued}
+GET    /sessions/{id}/channel/events?timeout=   shim long poll -> {events}
+POST   /sessions/{id}/channel/reply             {chat_id, text} agent reply out
 POST   /sessions/{id}/interrupt                 cut an in-flight turn short
 POST   /sessions/{id}/start                     provision the container
 POST   /sessions/{id}/stop                      stop it; state lives in origin.git
@@ -310,7 +314,12 @@ vocabulary, so a surface renders `claude` and `codex` identically:
 | `status` | `text` | liveness — requesting, provider retry |
 | `result` | `text` | turn finished |
 | `error` | `text` | turn failed |
+| `reply` | `chat_id`, `text` | agent routed a message out through its channel |
 | `raw` | `event` | unrecognised, passed through |
+
+These reach a surface through the session's bus rather than the request that
+started the turn, so a frame watching `/sessions/{id}/stream` sees turns opened
+by a channel event or by another surface, not only its own.
 
 ## Swappable externals
 
