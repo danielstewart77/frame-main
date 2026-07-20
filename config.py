@@ -76,10 +76,11 @@ class Settings:
 
     # Channel. The URL is what the container's shim calls back on, so it is the
     # host as seen from inside the sandbox, not the control plane's own bind.
+    # The bearer is no longer a config value: it is minted per session at spawn
+    # (see SessionManager.ensure_running), so a container speaks only for itself.
     channel_url: str = field(
         default_factory=lambda: os.getenv("FRAME_CHANNEL_URL", "http://host.docker.internal:8500")
     )
-    channel_token: str = field(default_factory=lambda: os.getenv("FRAME_CHANNEL_TOKEN", ""))
     channel_config_path: str = field(
         default_factory=lambda: os.getenv("FRAME_CHANNEL_CONFIG", "/opt/frame/mcp.json")
     )
@@ -96,6 +97,16 @@ class Settings:
     telegram_bot_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
     server_url: str = field(
         default_factory=lambda: os.getenv("FRAME_SERVER_URL", "http://127.0.0.1:8500")
+    )
+
+    # The shared secret a surface process (the Telegram bot) presents to act for
+    # any user. Empty means no service principal exists — the surfaces cannot
+    # authenticate and only console logins work. Set it in `.env` in any real
+    # deployment; the surfaces read the same var.
+    service_token: str = field(default_factory=lambda: os.getenv("FRAME_SERVICE_TOKEN", ""))
+    # How long a console login stays valid before it must be re-entered.
+    auth_token_ttl_hours: int = field(
+        default_factory=lambda: int(os.getenv("FRAME_AUTH_TOKEN_TTL_HOURS", "720"))
     )
 
     debug: bool = field(default_factory=lambda: _bool("FRAME_DEBUG", False))

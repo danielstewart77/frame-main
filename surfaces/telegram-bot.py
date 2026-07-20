@@ -23,13 +23,21 @@ EDIT_INTERVAL = 1.2  # seconds between editMessageText calls while streaming
 
 
 class TelegramBot:
-    def __init__(self, token: str, server_url: str):
+    def __init__(self, token: str, server_url: str, service_token: str = ""):
         self.token = token
         self.api = f"https://api.telegram.org/bot{token}"
         self.file_api = f"https://api.telegram.org/file/bot{token}"
         self.server_url = server_url.rstrip("/")
-        self.router = ChatRouter(HttpClient(server_url), surface="telegram")
+        self.router = ChatRouter(
+            HttpClient(server_url, service_token=service_token), surface="telegram"
+        )
         self.http = httpx.AsyncClient(timeout=70.0)
+        # A separate client for the control plane so the frame service token is
+        # never attached to a request bound for api.telegram.org.
+        control_headers = (
+            {"Authorization": f"Bearer {service_token}"} if service_token else {}
+        )
+        self.control = httpx.AsyncClient(timeout=70.0, headers=control_headers)
 
     async def run(self) -> None:
         offset = 0
@@ -79,7 +87,7 @@ class TelegramBot:
         info = await self.http.get(f"{self.api}/getFile", params={"file_id": audio_meta["file_id"]})
         path = info.json()["result"]["file_path"]
         blob = await self.http.get(f"{self.file_api}/{path}")
-        response = await self.http.post(
+        response = await self.control.post(
             f"{self.server_url}/voice/transcribe",
             files={"file": ("voice.ogg", blob.content, audio_meta.get("mime_type", "audio/ogg"))},
         )
@@ -106,7 +114,7 @@ class TelegramBot:
         message_id = sent.json()["result"]["message_id"]
         buffer, last_edit, shown = "", 0.0, ""
 
-        async with self.http.stream(
+        async with self.control.stream(
             "POST", f"{self.server_url}/sessions/{session_id}/turn",
             json={"prompt": prompt}, timeout=None,
         ) as response:
@@ -139,7 +147,13 @@ def main() -> None:
     settings = load()
     if not settings.telegram_bot_token:
         raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
-    asyncio.run(TelegramBot(settings.telegram_bot_token, settings.server_url).run())
+    if not settings.service_token:
+        raise SystemExit("FRAME_SERVICE_TOKEN is not set; the bot cannot authenticate")
+    asyncio.run(
+        TelegramBot(
+            settings.telegram_bot_token, settings.server_url, settings.service_token
+        ).run()
+    )
 
 
 if __name__ == "__main__":

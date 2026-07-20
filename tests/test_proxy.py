@@ -69,7 +69,9 @@ def make_client(settings, registry, provisioner, voice, handler):
         voice=voice,
         proxy_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
-    return TestClient(app)
+    test_client = TestClient(app)
+    test_client.headers["Authorization"] = f"Bearer {settings.service_token}"
+    return test_client
 
 
 def new_session(test_client, user_id):

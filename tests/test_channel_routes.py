@@ -173,21 +173,58 @@ def test_deliver_route_accepts_an_event(client, user, registry):
     assert response.json() == {"queued": 1}
 
 
-def test_delivered_event_is_returned_to_the_shim(client, user):
+def _shim(registry, session_id):
+    """The bearer the container's shim would hold for this session."""
+    return {"Authorization": f"Bearer {registry.rotate_channel_token(session_id)}"}
+
+
+def test_delivered_event_is_returned_to_the_shim(client, user, registry):
     created = client.post(f"/users/{user['user_id']}/sessions", json={}).json()
     client.post(f"/sessions/{created['id']}/channel/deliver", json={"content": "hello"})
 
-    response = client.get(f"/sessions/{created['id']}/channel/events", params={"timeout": 1})
+    response = client.get(
+        f"/sessions/{created['id']}/channel/events",
+        params={"timeout": 1},
+        headers=_shim(registry, created["id"]),
+    )
 
     assert response.json() == {"events": [{"content": "hello", "meta": {}}]}
 
 
-def test_channel_events_route_times_out_empty(client, user):
+def test_channel_events_route_times_out_empty(client, user, registry):
+    created = client.post(f"/users/{user['user_id']}/sessions", json={}).json()
+
+    response = client.get(
+        f"/sessions/{created['id']}/channel/events",
+        params={"timeout": 0.05},
+        headers=_shim(registry, created["id"]),
+    )
+
+    assert response.json() == {"events": []}
+
+
+def test_channel_events_rejects_a_caller_without_the_shim_token(client, user):
+    """The service token opens the front door but not the channel; only the
+    per-session bearer minted at spawn may drain the queue."""
     created = client.post(f"/users/{user['user_id']}/sessions", json={}).json()
 
     response = client.get(f"/sessions/{created['id']}/channel/events", params={"timeout": 0.05})
 
-    assert response.json() == {"events": []}
+    assert response.status_code == 401
+
+
+def test_channel_token_is_scoped_to_its_own_session(client, user, registry):
+    """A shim token for one session cannot drain another's channel."""
+    mine = client.post(f"/users/{user['user_id']}/sessions", json={}).json()
+    other = client.post(f"/users/{user['user_id']}/sessions", json={}).json()
+
+    response = client.get(
+        f"/sessions/{other['id']}/channel/events",
+        params={"timeout": 0.05},
+        headers=_shim(registry, mine["id"]),
+    )
+
+    assert response.status_code == 401
 
 
 def test_deliver_requires_content(client, user):
@@ -212,38 +249,48 @@ def test_deliver_to_archived_session_is_409(client, user):
     assert response.status_code == 409
 
 
-def test_reply_route_returns_the_event(client, user):
+def test_reply_route_returns_the_event(client, user, registry):
     created = client.post(f"/users/{user['user_id']}/sessions", json={}).json()
 
     response = client.post(
         f"/sessions/{created['id']}/channel/reply",
         json={"chat_id": "chat-7", "text": "all done"},
+        headers=_shim(registry, created["id"]),
     )
 
     assert response.json() == {"kind": "reply", "chat_id": "chat-7", "text": "all done"}
 
 
-def test_reply_to_unknown_session_is_404(client):
+def test_reply_without_the_shim_token_is_refused(client):
+    """No channel token for an unknown session, so the shim route says 401 — it
+    is not a session browser and does not distinguish which id is missing."""
     response = client.post("/sessions/nope/channel/reply", json={"chat_id": "1", "text": "x"})
-    assert response.status_code == 404
+    assert response.status_code == 401
 
 
-def test_stream_socket_delivers_a_channel_opened_turn(client, user):
+def test_stream_socket_delivers_a_channel_opened_turn(client, user, registry):
     """The whole point: no prompt on the socket, events arrive anyway."""
     created = client.post(f"/users/{user['user_id']}/sessions", json={}).json()
+    shim = _shim(registry, created["id"])
 
     with client.websocket_connect(f"/sessions/{created['id']}/stream") as socket:
-        client.post(f"/sessions/{created['id']}/channel/reply", json={"chat_id": "7", "text": "hi"})
+        client.post(
+            f"/sessions/{created['id']}/channel/reply",
+            json={"chat_id": "7", "text": "hi"},
+            headers=shim,
+        )
         assert socket.receive_json() == {"kind": "reply", "chat_id": "7", "text": "hi", "seq": 1}
 
 
-def test_stream_socket_replays_what_a_reconnecting_surface_missed(client, user):
+def test_stream_socket_replays_what_a_reconnecting_surface_missed(client, user, registry):
     """A surface that dropped off comes back whole, not from the live edge."""
     created = client.post(f"/users/{user['user_id']}/sessions", json={}).json()
+    shim = _shim(registry, created["id"])
     for index in range(3):
         client.post(
             f"/sessions/{created['id']}/channel/reply",
             json={"chat_id": "7", "text": str(index)},
+            headers=shim,
         )
 
     with client.websocket_connect(f"/sessions/{created['id']}/stream?since=1") as socket:

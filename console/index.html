@@ -7,7 +7,17 @@
 <link rel="stylesheet" href="/console/static/console.css">
 </head>
 <body>
-<div class="app" id="app" data-view="stage" data-rail="expanded">
+<div class="login" id="login" hidden>
+  <form class="login-card" id="login-form">
+    <h1 class="login-title">frame</h1>
+    <input id="login-username" type="text" autocomplete="username" placeholder="username" aria-label="username">
+    <input id="login-password" type="password" autocomplete="current-password" placeholder="password" aria-label="password">
+    <button id="login-submit" class="action-btn" type="submit">sign in</button>
+    <p id="login-error" class="login-error" hidden></p>
+  </form>
+</div>
+
+<div class="app" id="app" data-view="stage" data-rail="expanded" hidden>
 
   <aside class="rail" id="rail">
     <header class="rail-head">

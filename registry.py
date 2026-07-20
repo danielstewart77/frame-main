@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+import auth
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "db" / "schema.sql"
 
@@ -46,13 +48,20 @@ class Registry:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self._init_schema()
 
+    # Columns added after the first release. `CREATE TABLE IF NOT EXISTS` leaves
+    # an existing table alone, so a column added to the schema never reaches a
+    # database that predates it unless it is also listed here.
+    _ADDED_COLUMNS = {
+        "sessions": {"outcome": "TEXT"},
+    }
+
     def _init_schema(self) -> None:
         self.conn.executescript(SCHEMA_PATH.read_text())
-        # `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so a
-        # column added to the schema never reaches a database that predates it.
-        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(sessions)")}
-        if "outcome" not in columns:
-            self.conn.execute("ALTER TABLE sessions ADD COLUMN outcome TEXT")
+        for table, wanted in self._ADDED_COLUMNS.items():
+            existing = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+            for column, decl in wanted.items():
+                if column not in existing:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
         self.conn.commit()
 
     def close(self) -> None:
@@ -102,6 +111,80 @@ class Registry:
         self.link_identity(surface, external_id, user["user_id"])
         return user["user_id"]
 
+    # --- credentials + tokens ----------------------------------------------
+
+    def set_credential(self, user_id: str, username: str, password_hash: str) -> None:
+        """Give a user a console login, or replace the one they have."""
+        self.conn.execute(
+            """INSERT INTO credentials (user_id, username, password_hash, created_at)
+               VALUES (?,?,?,?)
+               ON CONFLICT(user_id) DO UPDATE
+                 SET username=excluded.username, password_hash=excluded.password_hash""",
+            (user_id, username, password_hash, now()),
+        )
+        self.conn.commit()
+
+    def credential_by_username(self, username: str) -> dict[str, Any] | None:
+        return _one(
+            self.conn.execute("SELECT * FROM credentials WHERE username=?", (username,))
+        )
+
+    def credential_for(self, user_id: str) -> dict[str, Any] | None:
+        return _one(self.conn.execute("SELECT * FROM credentials WHERE user_id=?", (user_id,)))
+
+    def count_credentials(self) -> int:
+        return int(self.conn.execute("SELECT COUNT(*) AS n FROM credentials").fetchone()["n"])
+
+    def store_token(self, token_hash: str, user_id: str, ttl_hours: int) -> dict[str, Any]:
+        issued = datetime.now(timezone.utc)
+        expires = issued + timedelta(hours=ttl_hours)
+        self.conn.execute(
+            """INSERT OR REPLACE INTO auth_tokens
+                 (token_hash, user_id, created_at, expires_at, last_used)
+               VALUES (?,?,?,?,?)""",
+            (
+                token_hash,
+                user_id,
+                issued.isoformat(timespec="seconds"),
+                expires.isoformat(timespec="seconds"),
+                None,
+            ),
+        )
+        self.conn.commit()
+        return {"user_id": user_id, "expires_at": expires.isoformat(timespec="seconds")}
+
+    def user_for_token(self, token_hash: str) -> str | None:
+        """Resolve a live token to its user, dropping it if it has expired."""
+        row = _one(
+            self.conn.execute(
+                "SELECT user_id, expires_at FROM auth_tokens WHERE token_hash=?", (token_hash,)
+            )
+        )
+        if not row:
+            return None
+        if row["expires_at"] <= now():
+            self.delete_token(token_hash)
+            return None
+        self.conn.execute(
+            "UPDATE auth_tokens SET last_used=? WHERE token_hash=?", (now(), token_hash)
+        )
+        self.conn.commit()
+        return row["user_id"]
+
+    def delete_token(self, token_hash: str) -> None:
+        self.conn.execute("DELETE FROM auth_tokens WHERE token_hash=?", (token_hash,))
+        self.conn.commit()
+
+    def delete_user_tokens(self, user_id: str) -> None:
+        """Log a user out everywhere — used when their password changes."""
+        self.conn.execute("DELETE FROM auth_tokens WHERE user_id=?", (user_id,))
+        self.conn.commit()
+
+    def purge_expired_tokens(self) -> int:
+        cursor = self.conn.execute("DELETE FROM auth_tokens WHERE expires_at <= ?", (now(),))
+        self.conn.commit()
+        return cursor.rowcount
+
     # --- sessions ----------------------------------------------------------
 
     def create_session(
@@ -138,6 +221,35 @@ class Registry:
         )
         self.conn.commit()
         return self.get_session(session_id)
+
+    # --- session channel tokens --------------------------------------------
+
+    def rotate_channel_token(self, session_id: str) -> str:
+        """Mint a fresh channel bearer for the session and return the plaintext.
+
+        Called each time a container is provisioned. Only the sha256 is kept, so
+        the old token dies with the old container and the database never holds a
+        usable one. The plaintext is returned exactly here, to go into the
+        container's env, and cannot be read back.
+        """
+        token = auth.new_token()
+        self.conn.execute(
+            """INSERT INTO session_tokens (session_id, token_hash) VALUES (?,?)
+               ON CONFLICT(session_id) DO UPDATE SET token_hash=excluded.token_hash""",
+            (session_id, auth.token_digest(token)),
+        )
+        self.conn.commit()
+        return token
+
+    def session_for_channel_token(self, token: str) -> str | None:
+        """Which session a presented channel bearer speaks for, if any."""
+        row = _one(
+            self.conn.execute(
+                "SELECT session_id FROM session_tokens WHERE token_hash=?",
+                (auth.token_digest(token),),
+            )
+        )
+        return row["session_id"] if row else None
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         return _one(self.conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)))
