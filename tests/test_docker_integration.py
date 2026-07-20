@@ -8,6 +8,7 @@ Build first: docker build -f sandbox/Dockerfile -t frame-main-sandbox:latest .
 """
 
 import asyncio
+import json
 import shutil
 import subprocess
 
@@ -105,6 +106,26 @@ async def test_the_stop_hook_pushes_work_to_the_host_bare_repo(container):
 
     assert session["branch"] in workspace.branches()
     assert "agent output" in workspace.diff(session["branch"])
+
+
+@pytest.mark.asyncio
+async def test_the_stop_hook_is_declared_not_merely_installed(container):
+    """Installing the script is not what makes it run.
+
+    Claude Code only executes a hook declared in settings.json. Every other test
+    here invokes the script by hand, which proves it works and proves nothing
+    about whether it ever fires.
+    """
+    handle, _, _ = container
+    code, out = await _exec(handle.container_id, "cat /root/.claude/settings.json")
+    assert code == 0, out
+    declared = json.loads(out)
+    commands = [
+        hook["command"]
+        for matcher in declared["hooks"]["Stop"]
+        for hook in matcher["hooks"]
+    ]
+    assert "/root/.claude/hooks/stop-commit.sh" in commands
 
 
 @pytest.mark.asyncio

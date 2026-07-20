@@ -24,8 +24,26 @@ if [ ! -d "$REPO/.git" ]; then
 fi
 
 # The Stop hook pushes every turn, so nothing is lost when this container dies.
+# Installing the script is not enough: Claude Code only runs a hook that is
+# declared in settings.json, so the declaration is the part that makes it fire.
 mkdir -p /root/.claude/hooks
 install -m 755 /opt/frame/hooks/stop-commit.sh /root/.claude/hooks/stop-commit.sh
+cat > /root/.claude/settings.json <<'JSON'
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/root/.claude/hooks/stop-commit.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
 
 cd "$REPO"
 exec sleep infinity
