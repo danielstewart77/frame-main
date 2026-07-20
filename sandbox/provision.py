@@ -21,9 +21,10 @@ import struct
 import termios
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Protocol
+from typing import Any, AsyncIterator, Callable, Protocol
 
 import harness as harness_mod
+from sandbox.harness_process import HarnessProcess, HarnessProcessError
 
 
 class ProvisionError(RuntimeError):
@@ -49,6 +50,9 @@ class Tty(Protocol):
 
 
 class Provisioner(Protocol):
+    # Set by the SessionManager: where output nobody requested is published.
+    on_unsolicited: Callable[[str, dict[str, Any]], None] | None
+
     async def provision(
         self, session: dict[str, Any], workspace: Any, env: dict[str, str]
     ) -> Container: ...
@@ -88,7 +92,12 @@ class DockerProvisioner:
         self.image = image
         self.port_range = port_range
         # The turn currently executing per session, so it can be interrupted.
+        # Only used by the one-shot path; stdin-driven harnesses interrupt in-band.
         self._running: dict[str, asyncio.subprocess.Process] = {}
+        # The long-lived harness per session, for harnesses that read stdin.
+        self._harnesses: dict[str, HarnessProcess] = {}
+        self._harness_containers: dict[str, str] = {}
+        self.on_unsolicited: Callable[[str, dict[str, Any]], None] | None = None
 
     async def provision(
         self, session: dict[str, Any], workspace: Any, env: dict[str, str]
@@ -137,6 +146,15 @@ class DockerProvisioner:
         container_id = session.get("container_id")
         if not container_id:
             raise ProvisionError("session has no container")
+        if harness_mod.supports_stdin(session["harness"]):
+            process = await self._harness(session, system_prompt, channel_config)
+            try:
+                async for event in process.turn(prompt):
+                    yield event
+            except HarnessProcessError as exc:
+                self._harnesses.pop(session["id"], None)
+                yield {"kind": "error", "text": str(exc)}
+            return
         argv = harness_mod.build_argv(
             session["harness"],
             prompt,
@@ -172,8 +190,58 @@ class DockerProvisioner:
                 "text": stderr.decode("utf-8", "replace").strip() or "harness exited nonzero",
             }
 
+    async def _harness(
+        self,
+        session: dict[str, Any],
+        system_prompt: str,
+        channel_config: str | None,
+    ) -> HarnessProcess:
+        """The session's long-lived harness, spawning it the first time."""
+        existing = self._harnesses.get(session["id"])
+        if existing is not None and existing.alive:
+            return existing
+        if existing is not None:
+            await existing.close()
+
+        container_id = session["container_id"]
+        argv = harness_mod.build_argv(
+            session["harness"],
+            None,
+            session["model"],
+            resume_id=session.get("resume_id"),
+            system_prompt=system_prompt,
+            channel_config=channel_config,
+        )
+        command = " ".join(shlex.quote(a) for a in argv)
+        docker_argv = [
+            "docker", "exec", "-i", "-w", "/workspace/repo", container_id, "bash", "-lc", command
+        ]
+
+        async def spawn() -> asyncio.subprocess.Process:
+            return await asyncio.create_subprocess_exec(
+                *docker_argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+        session_id = session["id"]
+
+        def unsolicited(event: dict[str, Any]) -> None:
+            if self.on_unsolicited is not None:
+                self.on_unsolicited(session_id, event)
+
+        process = HarnessProcess(session_id, session["harness"], spawn, unsolicited)
+        await process.start()
+        self._harnesses[session_id] = process
+        self._harness_containers[session_id] = container_id
+        return process
+
     async def interrupt(self, session_id: str) -> bool:
-        """Terminate the in-flight turn. False if nothing was running."""
+        """Cut the in-flight turn short. False if nothing was running."""
+        harness_process = self._harnesses.get(session_id)
+        if harness_process is not None:
+            return await harness_process.interrupt()
         process = self._running.get(session_id)
         if process is None or process.returncode is not None:
             return False
@@ -185,10 +253,22 @@ class DockerProvisioner:
         return await DockerTty.open(container_id)
 
     async def stop(self, container_id: str) -> None:
+        await self._close_harness_for(container_id)
         await _run(["docker", "stop", container_id])
 
     async def remove(self, container_id: str) -> None:
+        await self._close_harness_for(container_id)
         await _run(["docker", "rm", "-f", container_id])
+
+    async def _close_harness_for(self, container_id: str) -> None:
+        """A harness outlives its turns but not its container."""
+        for session_id, container in list(self._harness_containers.items()):
+            if container != container_id:
+                continue
+            self._harness_containers.pop(session_id, None)
+            process = self._harnesses.pop(session_id, None)
+            if process is not None:
+                await process.close()
 
 
 class DockerTty:
@@ -290,7 +370,13 @@ class FakeProvisioner:
         self.channel_configs: list[str | None] = []
         self.ttys: list["FakeTty"] = []
         self.interrupted: list[str] = []
+        self.on_unsolicited: Callable[[str, dict[str, Any]], None] | None = None
         self._counter = 0
+
+    def emit_unsolicited(self, session_id: str, event: dict[str, Any]) -> None:
+        """Stand in for the harness speaking with nobody having prompted it."""
+        if self.on_unsolicited is not None:
+            self.on_unsolicited(session_id, event)
 
     async def provision(
         self, session: dict[str, Any], workspace: Any, env: dict[str, str]

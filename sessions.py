@@ -45,6 +45,9 @@ class SessionManager:
         # Turns started by a channel event have no requester holding the
         # generator open, so the manager owns them until they finish.
         self._background: set[asyncio.Task[None]] = set()
+        # The harness stays up between turns, so it can also speak without being
+        # prompted. That output belongs to the session, not to any requester.
+        provisioner.on_unsolicited = self._publish_unsolicited
 
     # --- users -------------------------------------------------------------
 
@@ -192,6 +195,16 @@ class SessionManager:
         """
         self.get(session_id)
         return self.streams.bus(session_id).subscribe(since)
+
+    def _publish_unsolicited(self, session_id: str, event: dict[str, Any]) -> None:
+        """Harness output nobody asked for — a wake, or a background job landing."""
+        if event["kind"] == "session" and event.get("resume_id"):
+            self.registry.update_session(session_id, resume_id=event["resume_id"])
+        if event["kind"] in ("result", "error"):
+            # A session being woken by channel events is working, even though no
+            # surface prompted it; the reaper reads `last_active`.
+            self.registry.touch(session_id)
+        self.streams.publish(session_id, event)
 
     def run_turn_in_background(self, session_id: str, prompt: str) -> "asyncio.Task[None]":
         """Start a turn nobody is holding open, and fan it out to the bus."""

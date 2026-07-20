@@ -104,6 +104,32 @@ async def test_two_watchers_both_see_the_turn(manager, session):
     assert await drain(first, 4) == await drain(second, 4)
 
 
+async def test_unsolicited_harness_output_reaches_watchers(manager, session):
+    """The persistent harness speaks with no turn outstanding — a wake landing."""
+    subscription = manager.subscribe(session["id"])
+
+    manager.provisioner.emit_unsolicited(session["id"], {"kind": "text", "text": "awake"})
+
+    assert (await drain(subscription, 1))[0]["text"] == "awake"
+
+
+async def test_unsolicited_session_event_persists_the_resume_id(manager, session):
+    manager.provisioner.emit_unsolicited(
+        session["id"], {"kind": "session", "resume_id": "sess-42"}
+    )
+
+    assert manager.get(session["id"])["resume_id"] == "sess-42"
+
+
+async def test_a_woken_session_counts_as_active(manager, session):
+    """Otherwise the reaper stops a container that is doing channel-driven work."""
+    before = manager.get(session["id"])["last_active"]
+
+    manager.provisioner.emit_unsolicited(session["id"], {"kind": "result", "text": "done"})
+
+    assert manager.get(session["id"])["last_active"] >= before
+
+
 async def test_channel_reply_is_published_to_watchers(manager, session):
     subscription = manager.subscribe(session["id"])
 

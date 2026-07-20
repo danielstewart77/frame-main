@@ -232,6 +232,18 @@ batch process cannot have:
   containerised session approvable without falling back to
   `--dangerously-skip-permissions`.
 
+`sandbox/harness_process.py` holds that process: one `docker exec -i` per
+session, prompts written to stdin as stream-json, one reader task over stdout.
+Turns are serialised — the harness runs one at a time, so a second prompt written
+mid-turn would have its output interleaved with the first and be unattributable.
+Anything emitted while no turn is outstanding is unsolicited by definition, and
+goes to the session's bus rather than to a requester that doesn't exist; that is
+the wake path arriving. Interrupt is an in-band `control_request` rather than a
+signal, because signalling the process would take down the session context the
+persistent form exists to keep. The harness outlives its turns but not its
+container: stopping or removing a container closes it. `codex exec` is one-shot
+and has no stdin form, so that harness stays on the per-turn path.
+
 Gate inbound events on **sender identity** before emitting a notification — an
 ungated channel is a prompt-injection path straight into the session's context,
 and permission relay hands whoever can reach it authority over tool use.
