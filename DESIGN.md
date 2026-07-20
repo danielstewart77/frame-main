@@ -203,6 +203,8 @@ POST   /sessions/{id}/stop                      stop it; state lives in origin.g
 POST   /sessions/{id}/archive                   remove the container, keep the branch
 GET    /sessions/{id}/diff
 GET    /sessions/{id}/clone-url
+ANY    /sessions/{id}/app/{path}               browser pane: reverse proxy to app_port
+WS     /sessions/{id}/tui                      full terminal: pty on the container
 
 POST   /surfaces/{surface}/{external_id}/attach {session_id}
 GET    /surfaces/{surface}/{external_id}/attach
@@ -281,7 +283,9 @@ The app ships with a web console — the desktop control surface for sessions.
   rather than re-cloning. Cloning is only offered when no local copy exists.
 
 The console is pure UI over the existing HTTP API and `sessions` table; it adds no
-new session semantics.
+new session semantics. The build spec — what to port from the existing Spark to
+Bloom terminal page and what is genuinely new — is
+[docs/console-delta.md](docs/console-delta.md).
 
 ### Frame window management
 
