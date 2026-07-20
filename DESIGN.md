@@ -180,37 +180,74 @@ an unreachable provider ten times with backoff before giving up, so an unbounded
 turn would hold its slot and stream nothing; the timeout closes the stream and
 emits an `error` event instead.
 
-### Harness process model: per-turn batch vs. interactive — undecided
+### Harness process model: persistent, with a channel for inbound events
 
-`claude -p --output-format stream-json` (above) spawns the harness fresh per turn
-boundary rather than running it as a standing interactive process. This is a real
-tradeoff, not just an implementation detail, and frame-main hasn't settled it yet:
+The harness runs as **one long-lived process per session**, held open for the
+session's life rather than respawned per turn:
 
-- **Per-turn batch (current).** Each turn is a discrete process invocation with a
-  clean stream-json contract the control plane already normalises (`session`,
-  `text`, `tool`, `status`, `result`, `error` above). Small, boundable attack
-  surface — no standing control channel, nothing to reach between turns.
-  Confirmed failure mode (found debugging the same issue on Skippy, the sibling
-  bare-metal mind): a background Task-tool subagent's completion is documented as
-  arriving "in a later turn" — there is no push between turns. If a surface needs
-  to hear about that completion before the user's next message, it doesn't, until
-  something else opens a new turn. `--forward-subagent-text` narrows this for a
-  subagent's own streamed text but does not fix top-level unsolicited output.
-- **Fully interactive.** A persistent harness process (no `-p`, or driven via
-  `--remote-control`) could push output the moment it exists — no next-turn delay
-  for background work. Costs: loses the clean stream-json event contract this doc
-  builds the whole surface-normalisation table on (interactive mode renders a
-  terminal UI, not structured events, unless `--remote-control` exposes something
-  equivalent — unverified); a standing control channel per session is a materially
-  larger attack surface than a subprocess that spawns, answers, and dies; session
-  isolation gets fuzzier once the process isn't naturally bounded by turn
-  start/end.
+```
+claude -p --input-format stream-json --output-format stream-json \
+       --include-partial-messages \
+       --channels plugin:frame@frame-marketplace \
+       [--resume <resume_id>] \
+       --append-system-prompt "<identity + memory blocks>"
+```
 
-Revisit when a concrete feature needs it — e.g. a long-running Task-tool call that
-should stream progress into `/sessions/{id}/stream` before the user prompts again.
-Until then, per-turn batch stays the default — it's the smaller, easier-to-reason
--about surface, consistent with "wrap, don't rebuild" and "control plane owns
-Docker; the agent never does" above.
+`--input-format stream-json` accepts realtime streaming input on stdin, so a
+persistent process and the structured event contract this doc's
+surface-normalisation table is built on are not in tension: the control plane
+writes a user message to stdin and reads the same `session`, `text`, `tool`,
+`status`, `result`, `error` events off stdout it already normalises. Per-turn
+respawn buys nothing over this and costs a cold start plus a `--resume`
+round-trip on every turn.
+
+Persistence alone does not give unsolicited output. An idle stream-json process
+emits nothing until something arrives on stdin, so a background Task-tool
+subagent finishing still surfaces only when the next turn opens. **Channels**
+close that gap. A channel is an MCP server that Claude Code spawns over stdio and
+that pushes `notifications/claude/channel` events into the *already-running*
+session; each arrives in context as a `<channel source="…">` tag and opens a turn.
+frame-main ships its own channel server inside the session container, which gives
+the control plane three things a per-turn batch process cannot have:
+
+- **Inbound wake.** Anything — a finished background job, a CI webhook, a
+  scheduler, a Telegram message — POSTs to the channel server on container
+  loopback and the session reacts without waiting for the user.
+- **Outbound reply.** The channel exposes a `reply` tool, so the agent routes
+  messages back to the originating surface mid-turn rather than only in its
+  final result.
+- **Permission relay.** Declaring `claude/channel/permission` forwards tool
+  approval prompts to the surface with a five-letter `request_id`; the web
+  console or Telegram answers `yes <id>` and the verdict returns as
+  `notifications/claude/channel/permission`. This is what makes an unattended
+  containerised session approvable without falling back to
+  `--dangerously-skip-permissions`.
+
+Gate inbound events on **sender identity** before emitting a notification — an
+ungated channel is a prompt-injection path straight into the session's context,
+and permission relay hands whoever can reach it authority over tool use.
+
+Constraints to hold in mind:
+
+- Channels are a research preview. Only Anthropic-allowlisted plugins register;
+  frame-main's own channel needs `--dangerously-load-development-channels
+  server:frame` until it is listed, and the flag syntax and protocol contract may
+  change.
+- Channels require Anthropic auth via claude.ai or a Console API key and are
+  unavailable on Bedrock, Google Cloud's Agent Platform, and Microsoft Foundry.
+  Verify against the inference-proxy `ANTHROPIC_BASE_URL` wiring before relying
+  on them.
+- Events queue and are delivered as a group on the next turn if several arrive
+  while the session is busy. Independent event streams need separate sessions.
+
+**Remote Control is not the mechanism here**, despite the name. It is a
+persistent local session that does push subagent and workflow progress and mobile
+notifications in real time, but its only clients are claude.ai and the Claude
+mobile app via an Anthropic relay; there is no protocol for frame-main's console
+to be the client. It also requires claude.ai OAuth, refuses API keys and
+`claude setup-token` credentials, and is disabled outright when
+`ANTHROPIC_BASE_URL` points anywhere other than `api.anthropic.com` — which
+frame-main's inference proxy does.
 
 ## HTTP API
 
