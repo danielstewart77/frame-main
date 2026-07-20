@@ -15,7 +15,6 @@ from typing import Any, AsyncIterator
 import registry as registry_mod
 from bus import SessionStreams, Subscription
 from config import Settings
-from permissions import PermissionBroker, PermissionRequest
 from sandbox.provision import Provisioner, allocate_port
 from workspace import Workspace
 
@@ -43,7 +42,6 @@ class SessionManager:
         self.provisioner = provisioner
         self.semaphore = asyncio.Semaphore(settings.max_concurrent_sessions)
         self.streams = SessionStreams()
-        self.permissions = PermissionBroker()
         # Turns started by a channel event have no requester holding the
         # generator open, so the manager owns them until they finish.
         self._background: set[asyncio.Task[None]] = set()
@@ -253,53 +251,6 @@ class SessionManager:
         event = {"kind": "reply", "chat_id": chat_id, "text": text}
         self.streams.publish(session_id, event)
         return event
-
-    # --- permissions -------------------------------------------------------
-
-    async def request_permission(
-        self,
-        session_id: str,
-        tool: str,
-        tool_input: dict[str, Any] | None = None,
-        timeout: float | None = None,
-    ) -> PermissionRequest:
-        """Prompt whoever is watching, and block until one of them answers.
-
-        The harness is already blocked on its own request, so blocking here
-        keeps the exchange in one round trip: no verdict can outlive the prompt
-        it belongs to.
-        """
-        session = self.get(session_id)
-        if session["status"] == registry_mod.ARCHIVED:
-            raise SessionError("cannot request permission on an archived session")
-        request = self.permissions.open(session_id, tool, tool_input)
-        self.streams.publish(session_id, request.as_event())
-        await self.permissions.wait(request, timeout)
-        self.streams.publish(
-            session_id,
-            {
-                "kind": "permission_resolved",
-                "request_id": request.id,
-                "allow": bool(request.allow),
-                "reason": request.reason,
-            },
-        )
-        return request
-
-    def answer_permission(
-        self, session_id: str, request_id: str, allow: bool, reason: str = ""
-    ) -> PermissionRequest:
-        """A surface answering a prompt. Raises if it is no longer open."""
-        self.get(session_id)
-        request = self.permissions.resolve(request_id, allow, reason)
-        if request is None or request.session_id != session_id:
-            raise UnknownSession(f"no open permission request: {request_id}")
-        return request
-
-    def pending_permissions(self, session_id: str) -> list[PermissionRequest]:
-        """Open prompts, for a surface that attached after one went out."""
-        self.get(session_id)
-        return self.permissions.pending(session_id)
 
     async def attach_tty(self, session_id: str) -> Any:
         """An interactive shell on the session's container, for the TUI pane."""

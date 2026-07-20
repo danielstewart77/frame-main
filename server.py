@@ -75,17 +75,6 @@ class ChannelReply(BaseModel):
     text: str
 
 
-class PermissionAsk(BaseModel):
-    tool: str = Field(min_length=1)
-    input: dict[str, Any] = Field(default_factory=dict)
-    timeout: float | None = None
-
-
-class PermissionAnswer(BaseModel):
-    allow: bool
-    reason: str = ""
-
-
 class AttachRequest(BaseModel):
     session_id: str
 
@@ -280,49 +269,6 @@ def create_app(
         """A reply the agent routed back out through its channel."""
         _resolve(manager, session_id)
         return manager.channel_reply(session_id, body.chat_id, body.text)
-
-    @app.post("/sessions/{session_id}/channel/permission")
-    async def channel_permission(
-        session_id: str,
-        body: PermissionAsk,
-        manager: SessionManager = Depends(get_manager),
-    ):
-        """The shim asking a surface to approve a tool call, on the harness's behalf.
-
-        Holds the connection open until a surface answers or the wait runs out,
-        because the harness is blocked on its end regardless.
-        """
-        _resolve(manager, session_id)
-        try:
-            request = await manager.request_permission(
-                session_id, body.tool, body.input, body.timeout
-            )
-        except SessionError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        return {"request_id": request.id, "allow": bool(request.allow), "reason": request.reason}
-
-    @app.get("/sessions/{session_id}/permissions")
-    async def pending_permissions(
-        session_id: str, manager: SessionManager = Depends(get_manager)
-    ):
-        """Prompts still open, for a surface that attached after one went out."""
-        _resolve(manager, session_id)
-        return {"pending": [request.as_event() for request in manager.pending_permissions(session_id)]}
-
-    @app.post("/sessions/{session_id}/permissions/{request_id}")
-    async def answer_permission(
-        session_id: str,
-        request_id: str,
-        body: PermissionAnswer,
-        manager: SessionManager = Depends(get_manager),
-    ):
-        """A surface's verdict on an open prompt."""
-        _resolve(manager, session_id)
-        try:
-            request = manager.answer_permission(session_id, request_id, body.allow, body.reason)
-        except UnknownSession as exc:
-            raise HTTPException(404, str(exc)) from exc
-        return {"request_id": request.id, "allow": bool(request.allow), "reason": request.reason}
 
     @app.post("/sessions/{session_id}/channel/deliver", status_code=202)
     async def channel_deliver(
