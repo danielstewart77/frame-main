@@ -282,6 +282,8 @@
         finishTurn();
       } else if (event.kind === "result") {
         finishTurn();
+      } else if (event.kind === "gap") {
+        appendLine("system", "· some output was lost while disconnected");
       }
       // `session` and `raw` need no rendering
     }
@@ -296,11 +298,20 @@
       sendFront();
     }
 
+    // The last event seq this frame rendered. The server drops a socket that
+    // falls behind rather than starving it, so a reconnect asks for the tail
+    // from here and comes back whole.
+    let lastSeq = 0;
+
     function connect() {
       if (destroyed) return;
-      socket = new WebSocket(socketUrl("/sessions/" + id + "/stream"));
+      const path = "/sessions/" + id + "/stream" + (lastSeq ? "?since=" + lastSeq : "");
+      socket = new WebSocket(socketUrl(path));
       socket.onmessage = function (msg) {
-        try { handleEvent(JSON.parse(msg.data)); } catch (e) {}
+        let event;
+        try { event = JSON.parse(msg.data); } catch (e) { return; }
+        if (typeof event.seq === "number") lastSeq = event.seq;
+        handleEvent(event);
       };
       socket.onclose = function () {
         socket = null;

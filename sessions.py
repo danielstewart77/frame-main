@@ -170,25 +170,28 @@ class SessionManager:
                         break
                     if event["kind"] == "session" and event.get("resume_id"):
                         self.registry.update_session(session_id, resume_id=event["resume_id"])
-                    bus.publish(event)
-                    yield event
+                    yield bus.publish(event)
             except asyncio.TimeoutError:
-                event = {
-                    "kind": "error",
-                    "text": f"turn timed out after {timeout}s with no output",
-                }
-                bus.publish(event)
-                yield event
+                yield bus.publish(
+                    {
+                        "kind": "error",
+                        "text": f"turn timed out after {timeout}s with no output",
+                    }
+                )
             finally:
                 await stream.aclose()
         self.registry.touch(session_id)
 
     # --- streams -----------------------------------------------------------
 
-    def subscribe(self, session_id: str) -> Subscription:
-        """Watch everything a session emits, whoever started it."""
+    def subscribe(self, session_id: str, since: int | None = None) -> Subscription:
+        """Watch everything a session emits, whoever started it.
+
+        `since` is the last `seq` the surface rendered; the tail after it is
+        replayed before the live stream so a reconnect comes back whole.
+        """
         self.get(session_id)
-        return self.streams.bus(session_id).subscribe()
+        return self.streams.bus(session_id).subscribe(since)
 
     def run_turn_in_background(self, session_id: str, prompt: str) -> "asyncio.Task[None]":
         """Start a turn nobody is holding open, and fan it out to the bus."""
