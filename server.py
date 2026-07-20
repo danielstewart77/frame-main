@@ -141,6 +141,14 @@ async def _reap_loop(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Reconcile the session table against the containers docker actually has
+    # before anything can touch a stale container_id. A recovery that raises
+    # must not stop the server coming up — a fresh box has nothing to recover.
+    try:
+        recovered = await app.state.manager.recover()
+        logging.getLogger(__name__).info("recovered sessions: %s", recovered)
+    except Exception:  # pragma: no cover - defensive, logged not raised
+        logging.getLogger(__name__).exception("session recovery failed")
     reaper = asyncio.create_task(_reap_loop(app))
     supervisor = TelegramSupervisor(
         app.state.manager, app.state.registry, app.state.settings
