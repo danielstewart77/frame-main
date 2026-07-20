@@ -327,6 +327,37 @@ class SessionManager:
         self.registry.delete_session_events(session_id)
         self.registry.delete_session(session_id)
 
+    async def recover(self) -> dict[str, list[str]]:
+        """Make the session table true again after frame-main restarts.
+
+        frame-main can restart out from under its containers: a redeploy leaves
+        them running, a host reboot takes them with it, and either way the
+        `container_id` on a session row can no longer be trusted. A session
+        whose container is still up is re-adopted as-is — the next turn re-execs
+        its harness with `--resume`, so nothing is lost. A session whose
+        container is gone has its `container_id` cleared, so the next turn
+        re-provisions cleanly from `origin.git` rather than talking to a dead
+        id. A live container with no session still claiming it is an orphan and
+        is removed. Nothing here deletes a session: a stranded container is a
+        resource to reconcile, never a reason to lose someone's work.
+        """
+        live = await self.provisioner.live_sessions()
+        adopted: list[str] = []
+        cleared: list[str] = []
+        orphaned: list[str] = []
+        claimed: set[str] = set()
+        for session in self.registry.running_sessions():
+            claimed.add(session["id"])
+            if session["id"] in live:
+                adopted.append(session["id"])
+            else:
+                self.registry.update_session(session["id"], container_id=None, app_port=None)
+                cleared.append(session["id"])
+        for session_id in live - claimed:
+            await self.provisioner.remove_session(session_id)
+            orphaned.append(session_id)
+        return {"adopted": adopted, "cleared": cleared, "orphaned": orphaned}
+
     async def reap_idle(self, now: datetime | None = None) -> list[str]:
         """Stop containers idle past the timeout. Returns the sessions reaped."""
         now = now or datetime.now(timezone.utc)

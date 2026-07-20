@@ -141,6 +141,17 @@ able to find and resume every session. A `/switch` on any surface just repoints
 its `surface_bindings` row, which is the whole fix for "Telegram is stuck on one
 session."
 
+Because a restart also strands containers, `SessionManager.recover()` runs once
+at startup and reconciles the table against what docker is still running (matched
+by a `frame.session` label). A container that survived the restart is re-adopted
+untouched — the next turn re-execs its harness with `--resume`. A container that
+did not is cleared from its row so the next turn re-provisions cleanly from
+`origin.git`, and a live container no session still claims is removed as an
+orphan. Recovery never deletes a session: a stranded container is reconciled, not
+a reason to lose work. This makes the "start a project Friday, resume it two
+weeks later" case fall out for free — the idle reaper only stops containers,
+sessions never expire, and recovery restores whatever the machine forgot.
+
 ## Two views, one table
 
 - **Desktop fan-out.** Click plus, pick a harness and model, get a fresh session.

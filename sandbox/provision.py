@@ -73,6 +73,10 @@ class Provisioner(Protocol):
 
     async def remove(self, container_id: str) -> None: ...
 
+    async def live_sessions(self) -> set[str]: ...
+
+    async def remove_session(self, session_id: str) -> None: ...
+
 
 def allocate_port(used: set[int], port_range: tuple[int, int]) -> int | None:
     low, high = port_range
@@ -113,6 +117,10 @@ class DockerProvisioner:
             "--rm",
             "--name",
             name,
+            # Stamp the session id on the container so a restart can reconcile
+            # the table against what docker actually still has running.
+            "--label",
+            f"frame.session={session['id']}",
             # so ANTHROPIC_BASE_URL can point at a proxy running on the host
             "--add-host",
             "host.docker.internal:host-gateway",
@@ -260,6 +268,30 @@ class DockerProvisioner:
         await self._close_harness_for(container_id)
         await _run(["docker", "rm", "-f", container_id])
 
+    async def live_sessions(self) -> set[str]:
+        """The session ids docker is still running a container for.
+
+        Read off the `frame.session` label, so it survives frame-main losing
+        the container ids it held in memory across a restart.
+        """
+        code, out, _ = await _run(
+            ["docker", "ps", "--filter", "label=frame.session",
+             "--format", '{{.Label "frame.session"}}']
+        )
+        if code != 0:
+            return set()
+        return {line.strip() for line in out.splitlines() if line.strip()}
+
+    async def remove_session(self, session_id: str) -> None:
+        """Kill and delete a session's container by its label, id unknown."""
+        code, out, _ = await _run(
+            ["docker", "ps", "-aq", "--filter", f"label=frame.session={session_id}"]
+        )
+        if code != 0:
+            return
+        for container_id in (line.strip() for line in out.splitlines() if line.strip()):
+            await self.remove(container_id)
+
     async def _close_harness_for(self, container_id: str) -> None:
         """A harness outlives its turns but not its container."""
         for session_id, container in list(self._harness_containers.items()):
@@ -372,6 +404,11 @@ class FakeProvisioner:
         self.interrupted: list[str] = []
         self.on_unsolicited: Callable[[str, dict[str, Any]], None] | None = None
         self._counter = 0
+        # container_id -> session_id for containers docker would still list.
+        # Survives a new SessionManager over the same provisioner, the way a
+        # real container survives frame-main restarting; a test drops an entry
+        # to model a container that died while frame-main was down.
+        self._live: dict[str, str] = {}
 
     def emit_unsolicited(self, session_id: str, event: dict[str, Any]) -> None:
         """Stand in for the harness speaking with nobody having prompted it."""
@@ -389,6 +426,7 @@ class FakeProvisioner:
             app_port=int(app_port) if app_port else None,
         )
         self.provisioned[session["id"]] = container
+        self._live[container.container_id] = session["id"]
         return container
 
     async def run_turn(
@@ -419,9 +457,18 @@ class FakeProvisioner:
 
     async def stop(self, container_id: str) -> None:
         self.stopped.append(container_id)
+        self._live.pop(container_id, None)
 
     async def remove(self, container_id: str) -> None:
         self.removed.append(container_id)
+        self._live.pop(container_id, None)
+
+    async def live_sessions(self) -> set[str]:
+        return set(self._live.values())
+
+    async def remove_session(self, session_id: str) -> None:
+        for container_id in [c for c, s in self._live.items() if s == session_id]:
+            await self.remove(container_id)
 
 
 class FakeTty:
