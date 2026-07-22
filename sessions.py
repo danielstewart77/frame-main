@@ -44,6 +44,9 @@ class SessionManager:
         self.settings = settings
         self.provisioner = provisioner
         self.semaphore = asyncio.Semaphore(settings.max_concurrent_sessions)
+        # One provisioning at a time per session, so an eager `/start` and the
+        # first turn racing don't spin up two containers for one session.
+        self._provision_locks: dict[str, asyncio.Lock] = {}
         self.streams = SessionStreams()
         # Turns started by a channel event have no requester holding the
         # generator open, so the manager owns them until they finish.
@@ -104,25 +107,33 @@ class SessionManager:
         if session["container_id"]:
             return session
 
-        workspace = self.workspace(session["user_id"]).ensure()
-        app_port = session["app_port"] or allocate_port(
-            self.registry.used_app_ports(), self.settings.app_port_range
-        )
-        # A fresh channel bearer per container: the shim can call back for this
-        # session and no other, and the previous container's token is now dead.
-        channel_token = self.registry.rotate_channel_token(session_id)
-        env = self._spawn_env(session, workspace, channel_token)
-        if app_port:
-            env["_app_port"] = str(app_port)
+        # Serialize per session: a re-read inside the lock means a concurrent
+        # caller that already provisioned wins and we don't double-spawn.
+        lock = self._provision_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            session = self.get(session_id)
+            if session["container_id"]:
+                return session
 
-        async with self.semaphore:
-            container = await self.provisioner.provision(session, workspace, env)
+            workspace = self.workspace(session["user_id"]).ensure()
+            app_port = session["app_port"] or allocate_port(
+                self.registry.used_app_ports(), self.settings.app_port_range
+            )
+            # A fresh channel bearer per container: the shim can call back for this
+            # session and no other, and the previous container's token is now dead.
+            channel_token = self.registry.rotate_channel_token(session_id)
+            env = self._spawn_env(session, workspace, channel_token)
+            if app_port:
+                env["_app_port"] = str(app_port)
 
-        return self.registry.update_session(
-            session_id,
-            container_id=container.container_id,
-            app_port=container.app_port,
-        )
+            async with self.semaphore:
+                container = await self.provisioner.provision(session, workspace, env)
+
+            return self.registry.update_session(
+                session_id,
+                container_id=container.container_id,
+                app_port=container.app_port,
+            )
 
     def _spawn_env(
         self, session: dict[str, Any], workspace: Workspace, channel_token: str

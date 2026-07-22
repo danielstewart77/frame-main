@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -62,6 +63,14 @@ async def test_per_session_state_is_mounted_for_resume(manager, user_id, provisi
     from pathlib import Path
     assert session["id"] in mounts["/workspace/.claude/projects"]
     assert Path(mounts["/workspace/.claude/projects"]).is_dir()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_ensure_running_provisions_a_single_container(manager, user_id, provisioner):
+    """Eager /start racing the first turn must not spin up two containers."""
+    session = manager.create(user_id)
+    await asyncio.gather(*(manager.ensure_running(session["id"]) for _ in range(5)))
+    assert provisioner._counter == 1
 
 
 @pytest.mark.asyncio

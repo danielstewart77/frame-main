@@ -821,6 +821,11 @@
     const body = { harness: spawnHarness.value, model: spawnModel.value || undefined };
     try {
       const session = await api("POST", "/users/" + boot.user_id + "/sessions", body);
+      // Pre-warm: provision the container now so the first message lands on a
+      // ready session instead of paying the cold start. Fire-and-forget — the
+      // turn would provision anyway if this hasn't finished, and the manager
+      // serializes so the two don't double-spawn.
+      api("POST", "/sessions/" + session.id + "/start").catch(function () {});
       if (filter !== "active") setFilter("active"); else await refreshList();
       openFrame(session);
     } catch (e) {}
