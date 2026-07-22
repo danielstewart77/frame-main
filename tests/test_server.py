@@ -254,3 +254,20 @@ def test_models_falls_back_to_default_without_a_proxy(client):
 
 def test_models_requires_authentication(anon_client):
     assert anon_client.get("/models").status_code == 401
+
+
+def test_proxy_key_set_status_and_clear(logged_in):
+    uid = logged_in.user_id
+    assert logged_in.get(f"/users/{uid}/proxy-key").json()["configured"] is False
+    put = logged_in.put(f"/users/{uid}/proxy-key", json={"api_key": "sk-mine"})
+    assert put.status_code == 200 and put.json()["configured"] is True
+    got = logged_in.get(f"/users/{uid}/proxy-key").json()
+    assert got["configured"] is True and "api_key" not in got  # write-only
+    assert logged_in.delete(f"/users/{uid}/proxy-key").status_code == 204
+    assert logged_in.get(f"/users/{uid}/proxy-key").json()["configured"] is False
+
+
+def test_proxy_key_is_scoped_to_its_owner(logged_in):
+    assert logged_in.put("/users/someone-else/proxy-key", json={"api_key": "x"}).status_code == 403
+    assert logged_in.get("/users/someone-else/proxy-key").status_code == 403
+    assert logged_in.delete("/users/someone-else/proxy-key").status_code == 403

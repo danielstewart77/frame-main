@@ -142,8 +142,12 @@ class SessionManager:
         # token, so map that single pair onto the env var names each harness
         # reads: claude honours ANTHROPIC_*, codex honours OPENAI_*. Injecting
         # both is harmless to whichever harness this session isn't running.
+        #
+        # The key is the session owner's own proxy key when they've set one, so
+        # usage and model access are scoped to them; otherwise the box-wide
+        # token. The base URL is shared infrastructure and stays global.
         base_url = self.settings.anthropic_base_url
-        token = self.settings.ulmaiproxy_auth_token
+        token = self.registry.get_proxy_key(session["user_id"]) or self.settings.ulmaiproxy_auth_token
         if base_url:
             env["ANTHROPIC_BASE_URL"] = base_url
             env["OPENAI_BASE_URL"] = base_url

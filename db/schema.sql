@@ -56,6 +56,17 @@ CREATE TABLE IF NOT EXISTS telegram_bots (
   created_at    TEXT NOT NULL
 );
 
+-- A user's own inference-proxy API key. Optional and per-user: when set, the
+-- user's sessions reach the proxy with their key instead of the box-wide
+-- ULMAIPROXY_AUTH_TOKEN, so usage and model access are scoped to them. Stored
+-- as-is (not hashed) because it is presented downstream to the proxy — the same
+-- treatment telegram_bots gives its bot token.
+CREATE TABLE IF NOT EXISTS proxy_keys (
+  user_id    TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+  api_key    TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 -- one row per task/topic session; the session owns its harness + model + container
 CREATE TABLE IF NOT EXISTS sessions (
   id           TEXT PRIMARY KEY,        -- our stable session uuid

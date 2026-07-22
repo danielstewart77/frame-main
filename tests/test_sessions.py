@@ -100,6 +100,45 @@ def test_spawn_env_maps_one_proxy_credential_onto_both_harnesses(manager, user_i
     assert env["OPENAI_API_KEY"] == "secret-token"
 
 
+def test_spawn_env_prefers_the_users_own_proxy_key(manager, user_id, registry):
+    """A user's own proxy key wins over the box-wide token, scoping usage and
+    model access to them; the base URL stays shared."""
+    from dataclasses import replace
+
+    manager.settings = replace(
+        manager.settings,
+        anthropic_base_url="https://ulmaiproxy.utsystem.edu",
+        ulmaiproxy_auth_token="box-wide-token",
+    )
+    registry.set_proxy_key(user_id, "the-users-own-key")
+    session = manager.create(user_id)
+    env = manager._spawn_env(session, manager.workspace(user_id), "chan-token")
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "the-users-own-key"
+    assert env["OPENAI_API_KEY"] == "the-users-own-key"
+    assert env["ANTHROPIC_BASE_URL"] == "https://ulmaiproxy.utsystem.edu"
+
+
+def test_spawn_env_falls_back_to_the_box_token_without_a_user_key(manager, user_id):
+    from dataclasses import replace
+
+    manager.settings = replace(manager.settings, ulmaiproxy_auth_token="box-wide-token")
+    session = manager.create(user_id)
+    env = manager._spawn_env(session, manager.workspace(user_id), "chan-token")
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "box-wide-token"
+
+
+def test_proxy_key_registry_round_trip(registry):
+    uid = registry.create_user("Ada")["user_id"]
+    assert registry.get_proxy_key(uid) is None and registry.has_proxy_key(uid) is False
+    registry.set_proxy_key(uid, "sk-abc")
+    assert registry.get_proxy_key(uid) == "sk-abc" and registry.has_proxy_key(uid) is True
+    registry.set_proxy_key(uid, "sk-def")  # replaces
+    assert registry.get_proxy_key(uid) == "sk-def"
+    registry.clear_proxy_key(uid)
+    assert registry.get_proxy_key(uid) is None
+    assert registry.get_proxy_key(None) is None  # service principal has no key
+
+
 def test_spawn_env_omits_proxy_creds_when_unset(manager, user_id):
     """Offline, nothing provider-shaped is injected — the harness talks to no one."""
     from dataclasses import replace

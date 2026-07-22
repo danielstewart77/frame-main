@@ -876,6 +876,8 @@
   settingsOpen.addEventListener("click", function () {
     tgError.hidden = true;
     tgToken.value = "";
+    pkError.hidden = true;
+    pkKey.value = "";
     settingsEl.hidden = false;
   });
   settingsClose.addEventListener("click", function () { if (!mustChange) settingsEl.hidden = true; });
@@ -904,6 +906,45 @@
     try {
       await api("DELETE", "/users/" + boot.user_id + "/telegram");
       renderTelegram(null);
+    } catch (e) {}
+  });
+
+  // --- proxy key (per-user) ------------------------------------------------
+
+  const pkStatus = document.getElementById("pk-status");
+  const pkKey = document.getElementById("pk-key");
+  const pkSave = document.getElementById("pk-save");
+  const pkClear = document.getElementById("pk-clear");
+  const pkError = document.getElementById("pk-error");
+
+  function renderProxyKey(pk) {
+    const configured = pk && pk.configured;
+    pkStatus.textContent = configured ? "using your own key." : "using the shared key.";
+    pkClear.hidden = !configured;
+  }
+
+  pkSave.addEventListener("click", async function () {
+    const key = pkKey.value.trim();
+    if (!key) {
+      pkError.hidden = false; pkError.textContent = "paste a key first.";
+      return;
+    }
+    pkError.hidden = true;
+    try {
+      renderProxyKey(await api("PUT", "/users/" + boot.user_id + "/proxy-key", { api_key: key }));
+      pkKey.value = "";
+      await loadModels();  // the model list is keyed to this credential
+    } catch (e) {
+      pkError.hidden = false;
+      pkError.textContent = e.status === 400 ? "the proxy rejected that key." : "could not save the key.";
+    }
+  });
+
+  pkClear.addEventListener("click", async function () {
+    try {
+      await api("DELETE", "/users/" + boot.user_id + "/proxy-key");
+      renderProxyKey(null);
+      await loadModels();
     } catch (e) {}
   });
 
@@ -1083,6 +1124,7 @@
     }
 
     renderTelegram(boot.telegram);
+    renderProxyKey(boot.proxy_key);
 
     // Admin panel only for admins.
     adminSection.hidden = !boot.is_admin;

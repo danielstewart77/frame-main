@@ -26,6 +26,10 @@ def settings(tmp_path) -> Settings:
         max_concurrent_sessions=4,
         idle_timeout_minutes=30,
         service_token=SERVICE_TOKEN,
+        # Pin proxy settings empty so tests are hermetic — otherwise they inherit
+        # a real ANTHROPIC_BASE_URL from the box's env and reach out to the proxy.
+        anthropic_base_url="",
+        ulmaiproxy_auth_token="",
     )
 
 

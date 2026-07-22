@@ -115,6 +115,10 @@ class TelegramConfig(BaseModel):
     bot_token: str = Field(min_length=1)
 
 
+class ProxyKeyConfig(BaseModel):
+    api_key: str = Field(min_length=1)
+
+
 class PasswordChange(BaseModel):
     current_password: str
     new_password: str = Field(min_length=8)
@@ -655,6 +659,53 @@ def create_app(
         registry.clear_telegram_bot(user_id)
         return Response(status_code=204)
 
+    # --- per-user proxy key ------------------------------------------------
+
+    @app.get("/users/{user_id}/proxy-key")
+    def get_proxy_key(
+        user_id: str, who: auth_mod.Principal = Depends(principal)
+    ) -> dict[str, Any]:
+        """Whether the user has a proxy key set. The key itself is write-only
+        over the API — never returned once stored."""
+        _own_user(who, user_id)
+        return {"configured": registry.has_proxy_key(user_id)}
+
+    @app.put("/users/{user_id}/proxy-key")
+    async def put_proxy_key(
+        user_id: str,
+        body: ProxyKeyConfig,
+        request: Request,
+        who: auth_mod.Principal = Depends(principal),
+    ) -> dict[str, Any]:
+        """Set (or replace) the user's proxy key. Their sessions and model
+        picker use it instead of the box-wide token. Best-effort validated
+        against the proxy: a key the proxy rejects outright (401) is refused, but
+        a transient/unreachable proxy does not block saving."""
+        _own_user(who, user_id)
+        key = body.api_key.strip()
+        if not key:
+            raise HTTPException(400, "api_key must not be blank")
+        base = settings.anthropic_base_url.rstrip("/")
+        if base:
+            try:
+                resp = await request.app.state.proxy_client.get(
+                    base + "/v1/models", headers={"Authorization": f"Bearer {key}"}
+                )
+                if resp.status_code in (401, 403):
+                    raise HTTPException(400, "the proxy rejected that key")
+            except httpx.HTTPError:
+                pass  # transient/unreachable — accept and let it prove out later
+        registry.set_proxy_key(user_id, key)
+        return {"configured": True}
+
+    @app.delete("/users/{user_id}/proxy-key", status_code=204)
+    def delete_proxy_key(
+        user_id: str, who: auth_mod.Principal = Depends(principal)
+    ) -> Response:
+        _own_user(who, user_id)
+        registry.clear_proxy_key(user_id)
+        return Response(status_code=204)
+
     @app.get("/sessions/{session_id}")
     def get_session(
         session_id: str,
@@ -939,6 +990,7 @@ def create_app(
             "sidebar_collapsed": registry.sidebar_collapsed("web", user_id),
             "frames": registry.open_frames(user_id),
             "telegram": _telegram_summary(user_id),
+            "proxy_key": {"configured": registry.has_proxy_key(user_id)},
             "harnesses": [harness_mod.CLAUDE, harness_mod.CODEX],
             "default_harness": settings.default_harness,
             "default_model": settings.default_model,
@@ -958,7 +1010,7 @@ def create_app(
         it can't be reached, so the picker still works offline."""
         default = settings.default_model
         base = settings.anthropic_base_url.rstrip("/")
-        token = settings.ulmaiproxy_auth_token
+        token = registry.get_proxy_key(who.user_id) or settings.ulmaiproxy_auth_token
         fallback = {
             "harness": harness,
             "default": default,

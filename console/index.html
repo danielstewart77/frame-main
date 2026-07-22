@@ -65,6 +65,17 @@
       <p id="tg-error" class="login-error" hidden></p>
     </section>
     <section class="settings-section">
+      <h3 class="settings-heading">proxy key</h3>
+      <p id="pk-status" class="settings-status"></p>
+      <input id="pk-key" type="password" autocomplete="off" placeholder="proxy API key" aria-label="proxy API key">
+      <div class="settings-actions">
+        <button id="pk-save" class="action-btn" type="button">save</button>
+        <button id="pk-clear" class="action-btn danger" type="button">remove</button>
+      </div>
+      <p class="settings-hint">Your own inference-proxy key. When set, your sessions and the model list use it instead of the shared key. Stored write-only; leave blank to keep using the shared key.</p>
+      <p id="pk-error" class="login-error" hidden></p>
+    </section>
+    <section class="settings-section">
       <h3 class="settings-heading">account</h3>
       <p id="pw-status" class="settings-status"></p>
       <input id="pw-current" type="password" autocomplete="current-password" placeholder="current password" aria-label="current password">

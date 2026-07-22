@@ -211,6 +211,33 @@ class Registry:
         )
         self.conn.commit()
 
+    # --- per-user proxy keys -----------------------------------------------
+
+    def set_proxy_key(self, user_id: str, api_key: str) -> None:
+        """Set (or replace) a user's inference-proxy API key."""
+        self.conn.execute(
+            """INSERT INTO proxy_keys (user_id, api_key, created_at) VALUES (?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET api_key=excluded.api_key""",
+            (user_id, api_key, now()),
+        )
+        self.conn.commit()
+
+    def get_proxy_key(self, user_id: str | None) -> str | None:
+        """The user's own proxy key, or None to fall back to the box-wide token."""
+        if not user_id:
+            return None
+        row = _one(
+            self.conn.execute("SELECT api_key FROM proxy_keys WHERE user_id=?", (user_id,))
+        )
+        return row["api_key"] if row else None
+
+    def clear_proxy_key(self, user_id: str) -> None:
+        self.conn.execute("DELETE FROM proxy_keys WHERE user_id=?", (user_id,))
+        self.conn.commit()
+
+    def has_proxy_key(self, user_id: str) -> bool:
+        return self.get_proxy_key(user_id) is not None
+
     # --- credentials + tokens ----------------------------------------------
 
     def set_credential(self, user_id: str, username: str, password_hash: str) -> None:
