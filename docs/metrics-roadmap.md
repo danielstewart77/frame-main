@@ -1,5 +1,7 @@
 # Metrics & telemetry — roadmap (not yet implemented)
 
+> Part of the consolidated tracker in `docs/punch-list.md`.
+
 This file records **what we want to track** and **where the data would come
 from**, so we build it deliberately later rather than bolt it on. Nothing here
 is implemented yet. It supersedes the earlier "usage tracking" plan by widening

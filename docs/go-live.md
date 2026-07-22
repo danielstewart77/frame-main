@@ -1,5 +1,7 @@
 # Going live against the proxy
 
+> Outstanding launch/hardening items are tracked in `docs/punch-list.md`.
+
 Out of the box the app runs fully offline: `FRAME_PROVISIONER=fake` and
 `FRAME_VOICE=fake`, so the whole control plane — sessions, turns, streaming, git
 durability, auth, surface bindings — is exercised end to end with no Docker
