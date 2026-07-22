@@ -18,6 +18,7 @@ plane is configured with, owned by whatever account runs it.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -37,13 +38,18 @@ def _repo_urls(settings: Any) -> dict[str, str]:
 
 
 def _git(*args: str, cwd: Path | None = None) -> tuple[int, str]:
-    """Run git non-interactively (a missing credential fails fast, never hangs)."""
+    """Run git non-interactively (a missing credential fails fast, never hangs).
+
+    Inherits the control-plane account's environment — notably HOME — so git
+    finds that account's config and credential helper, which is how the ADO PAT
+    is supplied without ever putting it in our config or a container.
+    """
     result = subprocess.run(
         ["git", *args],
         cwd=str(cwd) if cwd else None,
         capture_output=True,
         text=True,
-        env={"GIT_TERMINAL_PROMPT": "0", "PATH": _PATH},
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
     )
     return result.returncode, (result.stdout + result.stderr).strip()
 
@@ -105,6 +111,9 @@ def sync(settings: Any) -> list[dict[str, Any]]:
     return results
 
 
+# (No fixed PATH — _git inherits the control-plane environment.)
+
+
 def skill_mounts(skills_root: Path | str) -> list[tuple[str, str]]:
     """(host_path, container_path) read-only mounts for skills repos on disk.
 
@@ -117,8 +126,3 @@ def skill_mounts(skills_root: Path | str) -> list[tuple[str, str]]:
         if dest.is_dir():
             mounts.append((str(dest), mount))
     return mounts
-
-
-# PATH for the git subprocess — kept explicit so the env is minimal but git and
-# its credential helper are still found.
-_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

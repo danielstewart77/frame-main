@@ -14,7 +14,12 @@ RUN npm install -g @anthropic-ai/claude-code @openai/codex
 # the operator rather than root.
 ENV HOME=/workspace
 WORKDIR /workspace
+# Pre-create the harness config dirs so that when a read-only skills volume is
+# mounted at ~/.claude/skills (or ~/.codex/skills), Docker only adds the leaf and
+# the parent stays world-writable — otherwise Docker creates ~/.claude as root
+# and the non-root entrypoint can't write its hooks/settings there.
 RUN mkdir -p /workspace/repo /workspace/transcripts /opt/frame/hooks \
+      /workspace/.claude /workspace/.codex \
     && chmod -R 777 /workspace
 
 # The channel shim the harness spawns over stdio. Its own venv: bookworm refuses
