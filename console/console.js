@@ -819,6 +819,7 @@
 
   spawnBtn.addEventListener("click", async function () {
     const body = { harness: spawnHarness.value, model: spawnModel.value || undefined };
+    if (spawnSkills.value) body.skill_group = spawnSkills.value;
     try {
       const session = await api("POST", "/users/" + boot.user_id + "/sessions", body);
       // Pre-warm: provision the container now so the first message lands on a
@@ -1123,6 +1124,105 @@
     }
   });
 
+  // --- skill groups (per-user) ---------------------------------------------
+
+  const spawnSkills = document.getElementById("spawn-skills");
+  const sgName = document.getElementById("sg-name");
+  const sgSkills = document.getElementById("sg-skills");
+  const sgSave = document.getElementById("sg-save");
+  const sgList = document.getElementById("sg-list");
+  const sgError = document.getElementById("sg-error");
+  let availableSkills = [];  // union of skill names across harnesses
+
+  function renderSpawnGroups() {
+    const groups = (boot && boot.skill_groups) || [];
+    spawnSkills.innerHTML = "";
+    const all = document.createElement("option");
+    all.value = ""; all.textContent = "all skills";
+    spawnSkills.appendChild(all);
+    groups.forEach(function (g) {
+      const o = document.createElement("option");
+      o.value = g.name; o.textContent = g.name;
+      spawnSkills.appendChild(o);
+    });
+  }
+
+  function renderSkillChecks(checked) {
+    const set = new Set(checked || []);
+    sgSkills.innerHTML = "";
+    availableSkills.forEach(function (name) {
+      const label = document.createElement("label");
+      label.className = "sg-skill";
+      const box = document.createElement("input");
+      box.type = "checkbox"; box.value = name; box.checked = set.has(name);
+      label.appendChild(box);
+      label.appendChild(document.createTextNode(" " + name));
+      sgSkills.appendChild(label);
+    });
+  }
+
+  function renderGroupList() {
+    const groups = (boot && boot.skill_groups) || [];
+    sgList.innerHTML = "";
+    groups.forEach(function (g) {
+      const row = document.createElement("div");
+      row.className = "admin-user";
+      const name = document.createElement("span");
+      name.className = "admin-user-name";
+      name.textContent = g.name + " (" + g.skills.length + ")";
+      row.appendChild(name);
+      const edit = document.createElement("button");
+      edit.type = "button"; edit.className = "action-btn"; edit.textContent = "edit";
+      edit.addEventListener("click", function () {
+        sgName.value = g.name; renderSkillChecks(g.skills);
+      });
+      row.appendChild(edit);
+      const del = document.createElement("button");
+      del.type = "button"; del.className = "action-btn danger"; del.textContent = "delete";
+      del.addEventListener("click", async function () {
+        try {
+          await api("DELETE", "/users/" + boot.user_id + "/skill-groups/" + encodeURIComponent(g.name));
+          await refreshGroups();
+        } catch (e) { sgError.hidden = false; sgError.textContent = "delete failed."; }
+      });
+      row.appendChild(del);
+      sgList.appendChild(row);
+    });
+  }
+
+  async function refreshGroups() {
+    try {
+      boot.skill_groups = await api("GET", "/users/" + boot.user_id + "/skill-groups");
+    } catch (e) { boot.skill_groups = boot.skill_groups || []; }
+    renderGroupList();
+    renderSpawnGroups();
+  }
+
+  async function initSkillGroups() {
+    try {
+      const avail = await api("GET", "/skills/available");
+      const names = new Set();
+      Object.keys(avail).forEach(function (h) { (avail[h] || []).forEach(function (n) { names.add(n); }); });
+      availableSkills = Array.from(names).sort();
+    } catch (e) { availableSkills = []; }
+    renderSkillChecks([]);
+    renderGroupList();
+    renderSpawnGroups();
+  }
+
+  sgSave.addEventListener("click", async function () {
+    sgError.hidden = true;
+    const name = sgName.value.trim();
+    if (!name) { sgError.hidden = false; sgError.textContent = "name the group first."; return; }
+    const skills = Array.prototype.slice.call(sgSkills.querySelectorAll("input:checked")).map(function (b) { return b.value; });
+    try {
+      await api("PUT", "/users/" + boot.user_id + "/skill-groups/" + encodeURIComponent(name), { skills: skills });
+      sgName.value = "";
+      renderSkillChecks([]);
+      await refreshGroups();
+    } catch (e) { sgError.hidden = false; sgError.textContent = "could not save the group."; }
+  });
+
   // --- login ---------------------------------------------------------------
 
   const loginEl = document.getElementById("login");
@@ -1181,6 +1281,7 @@
 
     renderTelegram(boot.telegram);
     renderProxyKey(boot.proxy_key);
+    await initSkillGroups();
 
     // Admin panels only for admins.
     adminSection.hidden = !boot.is_admin;

@@ -67,6 +67,18 @@ CREATE TABLE IF NOT EXISTS proxy_keys (
   created_at TEXT NOT NULL
 );
 
+-- A user's named skill group: a curated list of skill names selected at spawn,
+-- so a session mounts only those skills instead of the whole library. Skills
+-- are stored as a JSON array of names; they resolve against whichever harness
+-- repo the session runs (a name absent from that repo is simply skipped).
+CREATE TABLE IF NOT EXISTS skill_groups (
+  user_id    TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  skills     TEXT NOT NULL DEFAULT '[]',   -- json array of skill names
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, name)
+);
+
 -- one row per task/topic session; the session owns its harness + model + container
 CREATE TABLE IF NOT EXISTS sessions (
   id           TEXT PRIMARY KEY,        -- our stable session uuid
@@ -80,6 +92,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   app_port     INTEGER,                 -- reverse-proxied port for the live app (nullable)
   resume_id    TEXT,                    -- harness --resume id (null until first turn)
   transcript   TEXT,                    -- path to harness rollout jsonl (host-mounted)
+  skills       TEXT,                    -- json array of skill names to mount; null = all
   status       TEXT NOT NULL DEFAULT 'active',  -- active | done | archived
   outcome      TEXT,                    -- null while working; ok | error once a turn lands
   frame_state  TEXT NOT NULL DEFAULT 'closed',  -- closed | docked | minimized

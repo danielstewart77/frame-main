@@ -45,6 +45,19 @@ user's own key when set). Branch `user-management` holds the unmerged work.
 - [ ] **Live Telegram test.** Per-user bot path is built and unit-tested but never
       exercised against a real BotFather token.
 
+## Skills that depend on user credentials (design needed)
+
+Some skills (the ADO-workflow family: `get-story`, etc.) shell out to `az` against
+Azure DevOps and read a gitignored `skills-config.json` full of per-user, Windows-
+workstation assumptions (`reposBase`, `C:/…` paths, ADO org/identity, webhooks). The
+read-only mount gives the skill *files*; it can't supply the `az` binary, live ADO
+auth, or that per-user config, and the skills weren't written for a Linux sandbox.
+Rather than patch each one, we want a **repeatable path for credential-dependent
+skills**: redesign them to self-configure in any environment, or have them fetch
+per-user info/credentials from an external source at run time. Until then, skill
+groups let users simply *not* include these in a session. (Skill groups themselves:
+built.)
+
 ## Deferred features (roadmap)
 
 - [ ] **Metrics & telemetry** — both buckets in `metrics-roadmap.md`: agent usage

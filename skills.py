@@ -114,15 +114,46 @@ def sync(settings: Any) -> list[dict[str, Any]]:
 # (No fixed PATH — _git inherits the control-plane environment.)
 
 
-def skill_mounts(skills_root: Path | str) -> list[tuple[str, str]]:
-    """(host_path, container_path) read-only mounts for skills repos on disk.
+def available_skills(skills_root: Path | str) -> dict[str, list[str]]:
+    """Skill names present in each harness's clone, for the group editor.
 
-    Only repos actually cloned are mounted, so an unconfigured or offline box
-    simply spawns without skills rather than failing."""
+    A skill is a directory containing a SKILL.md; `.git` and the config/readme
+    files are skipped."""
+    root = Path(skills_root)
+    out: dict[str, list[str]] = {}
+    for name, _mount in REPOS:
+        harness = "claude" if "claude" in name else "codex"
+        repo = root / name
+        names: list[str] = []
+        if repo.is_dir():
+            for child in sorted(repo.iterdir()):
+                if child.is_dir() and child.name != ".git" and (child / "SKILL.md").is_file():
+                    names.append(child.name)
+        out[harness] = names
+    return out
+
+
+def skill_mounts(
+    skills_root: Path | str, selection: list[str] | None = None
+) -> list[tuple[str, str]]:
+    """(host_path, container_path) read-only mounts for skills on disk.
+
+    With no selection, the whole repo is mounted (every skill). With a selection
+    (a skill group), only those skill folders are mounted, each at its own path
+    under the harness skills dir — a name absent from a repo is simply skipped.
+    Only repos actually cloned contribute, so an unconfigured/offline box just
+    spawns without skills rather than failing."""
     root = Path(skills_root)
     mounts: list[tuple[str, str]] = []
     for name, mount in REPOS:
-        dest = root / name
-        if dest.is_dir():
-            mounts.append((str(dest), mount))
+        repo = root / name
+        if not repo.is_dir():
+            continue
+        if selection is None:
+            mounts.append((str(repo), mount))
+        else:
+            for skill in selection:
+                folder = repo / skill
+                if folder.is_dir():
+                    mounts.append((str(folder), f"{mount}/{skill}"))
     return mounts

@@ -81,6 +81,7 @@ class SessionManager:
         model: str | None = None,
         title: str | None = None,
         color: str | None = None,
+        skills: list[str] | None = None,
     ) -> dict[str, Any]:
         if not self.registry.get_user(user_id):
             raise UnknownSession(f"no such user: {user_id}")
@@ -91,6 +92,7 @@ class SessionManager:
             model=model or self.settings.default_model,
             title=title,
             color=color,
+            skills=skills,
         )
 
     def get(self, session_id: str) -> dict[str, Any]:
@@ -170,7 +172,12 @@ class SessionManager:
         # Shared skills, read-only. Passed alongside the env (like `_app_port`)
         # and turned into `-v …:ro` mounts by the provisioner; empty when no
         # skills are cloned, so an unconfigured box just spawns without them.
-        env["_skill_mounts"] = json.dumps(skills_mod.skill_mounts(self.settings.skills_root))
+        # A session's `skills` (from its group) narrows the mount to that set;
+        # null means the whole library.
+        selection = json.loads(session["skills"]) if session.get("skills") else None
+        env["_skill_mounts"] = json.dumps(
+            skills_mod.skill_mounts(self.settings.skills_root, selection)
+        )
         # Per-session harness state, read-write. Persists the conversation store
         # across container teardown so a resumed session continues its context,
         # not just its committed work.

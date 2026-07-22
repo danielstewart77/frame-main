@@ -56,7 +56,7 @@ class Registry:
     # an existing table alone, so a column added to the schema never reaches a
     # database that predates it unless it is also listed here.
     _ADDED_COLUMNS = {
-        "sessions": {"outcome": "TEXT"},
+        "sessions": {"outcome": "TEXT", "skills": "TEXT"},
         "users": {
             "role": "TEXT NOT NULL DEFAULT 'user'",
             "disabled": "INTEGER NOT NULL DEFAULT 0",
@@ -322,6 +322,7 @@ class Registry:
         title: str | None = None,
         color: str | None = None,
         session_id: str | None = None,
+        skills: list[str] | None = None,
     ) -> dict[str, Any]:
         session_id = session_id or new_id()
         stamp = now()
@@ -329,8 +330,8 @@ class Registry:
         self.conn.execute(
             """INSERT INTO sessions
                (id, user_id, title, color, harness, model, branch, status,
-                frame_state, speaker, created_at, last_active)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                frame_state, speaker, created_at, last_active, skills)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 session_id,
                 user_id,
@@ -344,10 +345,48 @@ class Registry:
                 0,
                 stamp,
                 stamp,
+                json.dumps(skills) if skills is not None else None,
             ),
         )
         self.conn.commit()
         return self.get_session(session_id)
+
+    # --- skill groups ------------------------------------------------------
+
+    def set_skill_group(self, user_id: str, name: str, skills: list[str]) -> None:
+        """Create or replace a named skill group for a user."""
+        self.conn.execute(
+            """INSERT INTO skill_groups (user_id, name, skills, created_at)
+               VALUES (?,?,?,?)
+               ON CONFLICT(user_id, name) DO UPDATE SET skills=excluded.skills""",
+            (user_id, name, json.dumps(skills), now()),
+        )
+        self.conn.commit()
+
+    def list_skill_groups(self, user_id: str) -> list[dict[str, Any]]:
+        rows = _all(
+            self.conn.execute(
+                "SELECT name, skills FROM skill_groups WHERE user_id=? ORDER BY name",
+                (user_id,),
+            )
+        )
+        for row in rows:
+            row["skills"] = json.loads(row["skills"])
+        return rows
+
+    def get_skill_group(self, user_id: str, name: str) -> list[str] | None:
+        row = _one(
+            self.conn.execute(
+                "SELECT skills FROM skill_groups WHERE user_id=? AND name=?", (user_id, name)
+            )
+        )
+        return json.loads(row["skills"]) if row else None
+
+    def delete_skill_group(self, user_id: str, name: str) -> None:
+        self.conn.execute(
+            "DELETE FROM skill_groups WHERE user_id=? AND name=?", (user_id, name)
+        )
+        self.conn.commit()
 
     # --- session channel tokens --------------------------------------------
 

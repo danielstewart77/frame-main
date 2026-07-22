@@ -32,6 +32,7 @@
     <div class="spawn">
       <select id="spawn-harness" aria-label="harness"></select>
       <select id="spawn-model" aria-label="model"></select>
+      <select id="spawn-skills" aria-label="skill group"></select>
       <button id="spawn" class="action-btn" type="button" title="new session">+</button>
     </div>
     <div id="list" class="list" aria-live="polite"></div>
@@ -86,6 +87,18 @@
       </div>
       <p class="settings-hint">Changing your password signs you out everywhere; log back in with the new one.</p>
       <p id="pw-error" class="login-error" hidden></p>
+    </section>
+    <section class="settings-section">
+      <h3 class="settings-heading">skill groups</h3>
+      <p id="sg-status" class="settings-status"></p>
+      <input id="sg-name" type="text" autocomplete="off" placeholder="group name" aria-label="skill group name">
+      <div id="sg-skills" class="sg-skills"></div>
+      <div class="settings-actions">
+        <button id="sg-save" class="action-btn" type="button">save group</button>
+      </div>
+      <div id="sg-list" class="admin-users"></div>
+      <p class="settings-hint">Pick skills, name the set, and save. Choose a group when you spawn a session to mount just those skills; "all skills" mounts everything.</p>
+      <p id="sg-error" class="login-error" hidden></p>
     </section>
     <section class="settings-section" id="skills-section" hidden>
       <h3 class="settings-heading">skills</h3>

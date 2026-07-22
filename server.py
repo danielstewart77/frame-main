@@ -75,6 +75,10 @@ class SessionCreate(BaseModel):
     model: str | None = None
     title: str | None = None
     color: str | None = None
+    # Skill selection: a named group to resolve, or an explicit list. Neither =
+    # the whole library.
+    skill_group: str | None = None
+    skills: list[str] | None = None
 
 
 class SessionPatch(BaseModel):
@@ -118,6 +122,10 @@ class TelegramConfig(BaseModel):
 
 class ProxyKeyConfig(BaseModel):
     api_key: str = Field(min_length=1)
+
+
+class SkillGroupBody(BaseModel):
+    skills: list[str] = Field(default_factory=list)
 
 
 class PasswordChange(BaseModel):
@@ -609,9 +617,16 @@ def create_app(
         who: auth_mod.Principal = Depends(principal),
     ) -> dict[str, Any]:
         _own_user(who, user_id)
+        # Resolve the skill selection: an explicit list wins; else a named group;
+        # else None (the whole library).
+        skills = body.skills
+        if skills is None and body.skill_group:
+            skills = registry.get_skill_group(user_id, body.skill_group)
+            if skills is None:
+                raise HTTPException(404, f"no such skill group: {body.skill_group}")
         try:
             return manager.create(
-                user_id, body.harness, body.model, body.title, body.color
+                user_id, body.harness, body.model, body.title, body.color, skills=skills
             )
         except UnknownSession as exc:
             raise HTTPException(404, str(exc)) from exc
@@ -721,6 +736,41 @@ def create_app(
     ) -> Response:
         _own_user(who, user_id)
         registry.clear_proxy_key(user_id)
+        return Response(status_code=204)
+
+    # --- skills: available library + per-user groups -----------------------
+
+    @app.get("/skills/available")
+    def skills_available(who: auth_mod.Principal = Depends(principal)) -> dict[str, Any]:
+        """Skill names present per harness, for composing groups."""
+        return skills_mod.available_skills(settings.skills_root)
+
+    @app.get("/users/{user_id}/skill-groups")
+    def list_skill_groups(
+        user_id: str, who: auth_mod.Principal = Depends(principal)
+    ) -> list[dict[str, Any]]:
+        _own_user(who, user_id)
+        return registry.list_skill_groups(user_id)
+
+    @app.put("/users/{user_id}/skill-groups/{name}")
+    def put_skill_group(
+        user_id: str,
+        name: str,
+        body: SkillGroupBody,
+        who: auth_mod.Principal = Depends(principal),
+    ) -> dict[str, Any]:
+        _own_user(who, user_id)
+        if not name.strip():
+            raise HTTPException(400, "group name must not be blank")
+        registry.set_skill_group(user_id, name, body.skills)
+        return {"name": name, "skills": body.skills}
+
+    @app.delete("/users/{user_id}/skill-groups/{name}", status_code=204)
+    def delete_skill_group(
+        user_id: str, name: str, who: auth_mod.Principal = Depends(principal)
+    ) -> Response:
+        _own_user(who, user_id)
+        registry.delete_skill_group(user_id, name)
         return Response(status_code=204)
 
     @app.get("/sessions/{session_id}")
@@ -1008,6 +1058,7 @@ def create_app(
             "frames": registry.open_frames(user_id),
             "telegram": _telegram_summary(user_id),
             "proxy_key": {"configured": registry.has_proxy_key(user_id)},
+            "skill_groups": registry.list_skill_groups(user_id),
             "harnesses": [harness_mod.CLAUDE, harness_mod.CODEX],
             "default_harness": settings.default_harness,
             "default_model": settings.default_model,
