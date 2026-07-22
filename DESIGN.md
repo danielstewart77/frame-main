@@ -410,11 +410,11 @@ never renders missing output as if nothing happened.
 
 ## Swappable externals
 
-The two pieces that need the VPN sit behind interfaces with offline fakes, so
-every layer above them is exercised end to end without a proxy or a Docker
+The two pieces that reach the network sit behind interfaces with offline fakes,
+so every layer above them is exercised end to end without the proxy or a Docker
 daemon. `FRAME_PROVISIONER` selects `fake` or `docker`; `FRAME_VOICE` selects
 `fake` or `azure`. Neither switch changes a call site — see
-[docs/vpn-cutover.md](docs/vpn-cutover.md).
+[docs/go-live.md](docs/go-live.md).
 
 ## Pull-down and browse
 

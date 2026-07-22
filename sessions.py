@@ -138,10 +138,18 @@ class SessionManager:
             "FRAME_CHANNEL_URL": self.settings.channel_url,
             "FRAME_CHANNEL_TOKEN": channel_token,
         }
-        if self.settings.anthropic_base_url:
-            env["ANTHROPIC_BASE_URL"] = self.settings.anthropic_base_url
-        if self.settings.anthropic_auth_token:
-            env["ANTHROPIC_AUTH_TOKEN"] = self.settings.anthropic_auth_token
+        # The proxy speaks both providers' protocols at one base URL with one
+        # token, so map that single pair onto the env var names each harness
+        # reads: claude honours ANTHROPIC_*, codex honours OPENAI_*. Injecting
+        # both is harmless to whichever harness this session isn't running.
+        base_url = self.settings.anthropic_base_url
+        token = self.settings.ulmaiproxy_auth_token
+        if base_url:
+            env["ANTHROPIC_BASE_URL"] = base_url
+            env["OPENAI_BASE_URL"] = base_url
+        if token:
+            env["ANTHROPIC_AUTH_TOKEN"] = token
+            env["OPENAI_API_KEY"] = token
         return env
 
     def system_prompt(self, session: dict[str, Any]) -> str:

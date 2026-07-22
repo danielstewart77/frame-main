@@ -17,9 +17,10 @@ cp .env.example .env          # defaults run fully offline
 
 Out of the box `FRAME_PROVISIONER=fake` and `FRAME_VOICE=fake`, so the whole
 control plane — sessions, turns, streaming, git durability, surface bindings —
-runs with no Docker daemon, no provider account, and no Azure reachability.
-Switching both to their real backends is configuration only; see
-[docs/vpn-cutover.md](docs/vpn-cutover.md).
+runs with no Docker daemon, no provider account, and no network reachability.
+Going live — pointing sessions at the UT System AI proxy at
+`ulmaiproxy.utsystem.edu` — is configuration only; see
+[docs/go-live.md](docs/go-live.md).
 
 ```bash
 .venv/bin/python -m pytest

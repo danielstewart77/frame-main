@@ -81,6 +81,38 @@ async def test_turn_updates_last_active(manager, user_id, registry):
     assert registry.get_session(session["id"])["last_active"] > "2001"
 
 
+def test_spawn_env_maps_one_proxy_credential_onto_both_harnesses(manager, user_id):
+    """One base URL + one token reach the container under each harness's own
+    env var names — ANTHROPIC_* for claude, OPENAI_* for codex."""
+    from dataclasses import replace
+
+    manager.settings = replace(
+        manager.settings,
+        anthropic_base_url="https://ulmaiproxy.utsystem.edu",
+        ulmaiproxy_auth_token="secret-token",
+    )
+    session = manager.create(user_id)
+    env = manager._spawn_env(session, manager.workspace(user_id), "chan-token")
+
+    assert env["ANTHROPIC_BASE_URL"] == "https://ulmaiproxy.utsystem.edu"
+    assert env["OPENAI_BASE_URL"] == "https://ulmaiproxy.utsystem.edu"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "secret-token"
+    assert env["OPENAI_API_KEY"] == "secret-token"
+
+
+def test_spawn_env_omits_proxy_creds_when_unset(manager, user_id):
+    """Offline, nothing provider-shaped is injected — the harness talks to no one."""
+    from dataclasses import replace
+
+    manager.settings = replace(
+        manager.settings, anthropic_base_url="", ulmaiproxy_auth_token=""
+    )
+    session = manager.create(user_id)
+    env = manager._spawn_env(session, manager.workspace(user_id), "chan-token")
+    for key in ("ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"):
+        assert key not in env
+
+
 @pytest.mark.asyncio
 async def test_system_prompt_carries_identity_and_commit_discipline(manager, user_id):
     manager.workspace(user_id).set_identity("Daniel is the operator.")

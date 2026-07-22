@@ -12,10 +12,10 @@ def test_dotenv_values_reach_settings(tmp_path, monkeypatch):
         "\n"
         "FRAME_PROVISIONER=docker\n"
         "ANTHROPIC_BASE_URL=http://host.docker.internal:8899\n"
-        'ANTHROPIC_AUTH_TOKEN="hmp-test"\n',
+        'ULMAIPROXY_AUTH_TOKEN="hmp-test"\n',
         encoding="utf-8",
     )
-    for key in ("FRAME_PROVISIONER", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
+    for key in ("FRAME_PROVISIONER", "ANTHROPIC_BASE_URL", "ULMAIPROXY_AUTH_TOKEN"):
         monkeypatch.delenv(key, raising=False)
 
     load_dotenv(env_file)
@@ -23,7 +23,7 @@ def test_dotenv_values_reach_settings(tmp_path, monkeypatch):
 
     assert settings.provisioner == "docker"
     assert settings.anthropic_base_url == "http://host.docker.internal:8899"
-    assert settings.anthropic_auth_token == "hmp-test"
+    assert settings.ulmaiproxy_auth_token == "hmp-test"
 
 
 def test_real_env_wins_over_dotenv(tmp_path, monkeypatch):

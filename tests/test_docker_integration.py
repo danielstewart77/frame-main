@@ -9,8 +9,11 @@ Build first: docker build -f sandbox/Dockerfile -t frame-main-sandbox:latest .
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
+
+from pathlib import Path
 
 import pytest
 
@@ -30,7 +33,7 @@ def _image_present() -> bool:
 
 
 pytestmark = pytest.mark.skipif(
-    not _image_present(), reason=f"{IMAGE} not built; see docs/vpn-cutover.md"
+    not _image_present(), reason=f"{IMAGE} not built; see docs/go-live.md"
 )
 
 
@@ -98,14 +101,46 @@ async def test_both_harness_clis_are_installed(container):
 
 
 @pytest.mark.asyncio
+async def test_the_image_declares_itself_a_sandbox(container):
+    """The harness runs as root here and refuses --dangerously-skip-permissions
+    as root unless IS_SANDBOX is set. Without it, every unattended turn dies on
+    the root check before it ever reaches the proxy."""
+    handle, _, _ = container
+    code, out = await _exec(handle.container_id, "printf %s \"$IS_SANDBOX\"")
+    assert code == 0
+    assert out.strip() == "1"
+
+
+@pytest.mark.asyncio
+async def test_the_container_runs_as_the_host_user(container):
+    """Not root: the harness runs as the operator so pushed work is not
+    root-owned on the host. The DockerProvisioner passes --user uid:gid."""
+    handle, _, _ = container
+    code, out = await _exec(handle.container_id, "id -u")
+    assert code == 0
+    assert out.strip() == str(os.getuid())
+
+
+@pytest.mark.asyncio
 async def test_the_stop_hook_pushes_work_to_the_host_bare_repo(container):
     handle, workspace, session = container
     await _exec(handle.container_id, "echo 'agent output' > note.txt")
-    code, out = await _exec(handle.container_id, "/root/.claude/hooks/stop-commit.sh")
+    code, out = await _exec(handle.container_id, "$HOME/.claude/hooks/stop-commit.sh")
     assert code == 0, out
 
     assert session["branch"] in workspace.branches()
     assert "agent output" in workspace.diff(session["branch"])
+
+    # The whole point of running as the host user: pushed objects belong to the
+    # operator, so the host can read, gc, and clean them up without root.
+    objects = workspace.origin / "objects"
+    owners = {
+        (Path(root) / name).stat().st_uid
+        for root, _, files in os.walk(objects)
+        for name in files
+    }
+    assert owners, "expected pushed objects in the bare repo"
+    assert owners == {os.getuid()}
 
 
 @pytest.mark.asyncio
@@ -117,7 +152,7 @@ async def test_the_stop_hook_is_declared_not_merely_installed(container):
     about whether it ever fires.
     """
     handle, _, _ = container
-    code, out = await _exec(handle.container_id, "cat /root/.claude/settings.json")
+    code, out = await _exec(handle.container_id, 'cat "$HOME/.claude/settings.json"')
     assert code == 0, out
     declared = json.loads(out)
     commands = [
@@ -125,13 +160,13 @@ async def test_the_stop_hook_is_declared_not_merely_installed(container):
         for matcher in declared["hooks"]["Stop"]
         for hook in matcher["hooks"]
     ]
-    assert "/root/.claude/hooks/stop-commit.sh" in commands
+    assert any(c.endswith("/.claude/hooks/stop-commit.sh") for c in commands)
 
 
 @pytest.mark.asyncio
 async def test_the_stop_hook_is_a_no_op_when_nothing_changed(container):
     handle, workspace, session = container
-    code, out = await _exec(handle.container_id, "/root/.claude/hooks/stop-commit.sh")
+    code, out = await _exec(handle.container_id, '"$HOME/.claude/hooks/stop-commit.sh"')
     assert code == 0, out
     assert workspace.diff(session["branch"]) == ""
 
@@ -157,7 +192,7 @@ async def test_work_survives_the_container_being_destroyed(tmp_path):
             break
         await asyncio.sleep(0.25)
     await _exec(first.container_id, "echo 'turn one' > work.txt")
-    await _exec(first.container_id, "/root/.claude/hooks/stop-commit.sh")
+    await _exec(first.container_id, '"$HOME/.claude/hooks/stop-commit.sh"')
     await provisioner.remove(first.container_id)
 
     second = await provisioner.provision(session, workspace, dict(env))

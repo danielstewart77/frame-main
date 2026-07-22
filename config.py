@@ -1,7 +1,7 @@
 """Non-secret settings, resolved from the environment with sane defaults.
 
-Every value that must differ between the offline box and the VPN box is an env
-var, so Monday is a `.env` edit rather than a code change.
+Every value that must differ between the offline box and the box wired to the
+proxy is an env var, so going live is a `.env` edit rather than a code change.
 """
 
 from __future__ import annotations
@@ -85,10 +85,14 @@ class Settings:
         default_factory=lambda: os.getenv("FRAME_CHANNEL_CONFIG", "/opt/frame/mcp.json")
     )
 
-    # Harness credentials handed to the container at spawn time.
+    # Proxy the harnesses reach the provider through, handed to the container at
+    # spawn time. One base URL and one token serve both harnesses; the token is
+    # named for the proxy, not the provider, so it is not mistaken for an
+    # Anthropic key. `_spawn_env` maps them onto the env var names each harness
+    # actually reads (ANTHROPIC_* for claude, OPENAI_* for codex).
     anthropic_base_url: str = field(default_factory=lambda: os.getenv("ANTHROPIC_BASE_URL", ""))
-    anthropic_auth_token: str = field(
-        default_factory=lambda: os.getenv("ANTHROPIC_AUTH_TOKEN", "")
+    ulmaiproxy_auth_token: str = field(
+        default_factory=lambda: os.getenv("ULMAIPROXY_AUTH_TOKEN", "")
     )
 
     default_harness: str = field(default_factory=lambda: os.getenv("FRAME_DEFAULT_HARNESS", "claude"))

@@ -30,17 +30,19 @@ def test_entrypoint_declares_the_stop_hook_it_installs():
     that skips by default.
     """
     entrypoint = (ROOT / "sandbox" / "entrypoint.sh").read_text()
-    assert "/root/.claude/settings.json" in entrypoint
+    # Config lives under $HOME (a writable /workspace) because the container runs
+    # as the host user, not root — see provision.py --user.
+    assert 'cat > "$HOME/.claude/settings.json" <<JSON' in entrypoint
 
-    body = entrypoint.split("cat > /root/.claude/settings.json <<'JSON'")[1]
+    body = entrypoint.split('cat > "$HOME/.claude/settings.json" <<JSON')[1]
     declared = json.loads(body.split("\nJSON")[0])
     commands = [
         hook["command"]
         for matcher in declared["hooks"]["Stop"]
         for hook in matcher["hooks"]
     ]
-    assert "/root/.claude/hooks/stop-commit.sh" in commands
-    assert "install -m 755 /opt/frame/hooks/stop-commit.sh" in entrypoint
+    assert "$HOME/.claude/hooks/stop-commit.sh" in commands
+    assert 'install -m 755 /opt/frame/hooks/stop-commit.sh "$HOME/.claude/hooks/stop-commit.sh"' in entrypoint
 
 
 @pytest.mark.asyncio

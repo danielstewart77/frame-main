@@ -1,9 +1,9 @@
 """Voice — Azure Whisper STT and an Azure neural voice for TTS, called inline.
 
-The Azure endpoints are the one part of the system that cannot be reached from
-outside the VPN, so they sit behind this interface with a fake implementation.
-Switching `FRAME_VOICE=fake` to `azure` and filling in the credentials is the
-whole of the Monday wiring — no call site changes.
+The Azure endpoints reach the network, so they sit behind this interface with a
+fake implementation for offline development. Switching `FRAME_VOICE=fake` to
+`azure` and filling in the credentials is the whole of the wiring — no call site
+changes.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ class VoiceService(Protocol):
 
 
 class AzureVoice:
-    """Azure Whisper (STT) + Azure Speech neural TTS. Requires VPN reachability."""
+    """Azure Whisper (STT) + Azure Speech neural TTS. Requires network reachability."""
 
     def __init__(
         self,

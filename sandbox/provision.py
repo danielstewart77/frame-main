@@ -95,6 +95,9 @@ class DockerProvisioner:
     def __init__(self, image: str, port_range: tuple[int, int] = (9600, 9699)):
         self.image = image
         self.port_range = port_range
+        # Run the container as the host user the control plane runs as, so work
+        # pushed into the mounted bare repo is owned by the operator, not root.
+        self._user = f"{os.getuid()}:{os.getgid()}"
         # The turn currently executing per session, so it can be interrupted.
         # Only used by the one-shot path; stdin-driven harnesses interrupt in-band.
         self._running: dict[str, asyncio.subprocess.Process] = {}
@@ -117,11 +120,15 @@ class DockerProvisioner:
             "--rm",
             "--name",
             name,
+            # Run as the host user so pushed work is not root-owned on the host.
+            "--user",
+            self._user,
             # Stamp the session id on the container so a restart can reconcile
             # the table against what docker actually still has running.
             "--label",
             f"frame.session={session['id']}",
-            # so ANTHROPIC_BASE_URL can point at a proxy running on the host
+            # so the channel shim can call FRAME_CHANNEL_URL back on the host.
+            # (The inference proxy is reached by its own DNS name, not this.)
             "--add-host",
             "host.docker.internal:host-gateway",
             "-v",
@@ -172,7 +179,10 @@ class DockerProvisioner:
             channel_config=channel_config,
         )
         command = " ".join(shlex.quote(a) for a in argv)
-        docker_argv = ["docker", "exec", "-w", "/workspace/repo", container_id, "bash", "-lc", command]
+        docker_argv = [
+            "docker", "exec", "-u", self._user, "-w", "/workspace/repo",
+            container_id, "bash", "-lc", command,
+        ]
 
         process = await asyncio.create_subprocess_exec(
             *docker_argv,
@@ -222,7 +232,8 @@ class DockerProvisioner:
         )
         command = " ".join(shlex.quote(a) for a in argv)
         docker_argv = [
-            "docker", "exec", "-i", "-w", "/workspace/repo", container_id, "bash", "-lc", command
+            "docker", "exec", "-i", "-u", self._user, "-w", "/workspace/repo",
+            container_id, "bash", "-lc", command,
         ]
 
         async def spawn() -> asyncio.subprocess.Process:
@@ -258,7 +269,7 @@ class DockerProvisioner:
 
     async def attach_tty(self, container_id: str) -> Tty:
         """A real pty into the container, so TUIs and slash-commands work."""
-        return await DockerTty.open(container_id)
+        return await DockerTty.open(container_id, user=self._user)
 
     async def stop(self, container_id: str) -> None:
         await self._close_harness_for(container_id)
@@ -317,11 +328,14 @@ class DockerTty:
         self._closed = False
 
     @classmethod
-    async def open(cls, container_id: str, command: str = "bash -l") -> "DockerTty":
+    async def open(
+        cls, container_id: str, command: str = "bash -l", user: str | None = None
+    ) -> "DockerTty":
         master_fd, slave_fd = pty.openpty()
+        user_flag = ["-u", user] if user else []
         try:
             process = await asyncio.create_subprocess_exec(
-                "docker", "exec", "-it", container_id, "bash", "-lc", command,
+                "docker", "exec", "-it", *user_flag, container_id, "bash", "-lc", command,
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,

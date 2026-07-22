@@ -6,6 +6,8 @@ set -euo pipefail
 ORIGIN="${GIT_ORIGIN:-/origin.git}"
 BRANCH="${FRAME_BRANCH:?FRAME_BRANCH is required}"
 REPO=/workspace/repo
+# Runs as the host user (see provision.py --user); HOME is writable /workspace.
+export HOME="${HOME:-/workspace}"
 
 git config --global user.name "frame-main agent"
 git config --global user.email "agent@frame-main.local"
@@ -26,9 +28,9 @@ fi
 # The Stop hook pushes every turn, so nothing is lost when this container dies.
 # Installing the script is not enough: Claude Code only runs a hook that is
 # declared in settings.json, so the declaration is the part that makes it fire.
-mkdir -p /root/.claude/hooks
-install -m 755 /opt/frame/hooks/stop-commit.sh /root/.claude/hooks/stop-commit.sh
-cat > /root/.claude/settings.json <<'JSON'
+mkdir -p "$HOME/.claude/hooks"
+install -m 755 /opt/frame/hooks/stop-commit.sh "$HOME/.claude/hooks/stop-commit.sh"
+cat > "$HOME/.claude/settings.json" <<JSON
 {
   "hooks": {
     "Stop": [
@@ -36,7 +38,7 @@ cat > /root/.claude/settings.json <<'JSON'
         "hooks": [
           {
             "type": "command",
-            "command": "/root/.claude/hooks/stop-commit.sh"
+            "command": "$HOME/.claude/hooks/stop-commit.sh"
           }
         ]
       }

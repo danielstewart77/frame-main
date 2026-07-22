@@ -8,8 +8,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Harness CLIs. The agent runs these; it never sees a Docker socket.
 RUN npm install -g @anthropic-ai/claude-code @openai/codex
 
+# HOME lives in /workspace, made world-writable so the container can run as any
+# host uid (see the --user wiring in provision.py) and still write its git and
+# harness config. Running as the host user is what keeps pushed work owned by
+# the operator rather than root.
+ENV HOME=/workspace
 WORKDIR /workspace
-RUN mkdir -p /workspace/repo /workspace/transcripts /opt/frame/hooks
+RUN mkdir -p /workspace/repo /workspace/transcripts /opt/frame/hooks \
+    && chmod -R 777 /workspace
 
 # The channel shim the harness spawns over stdio. Its own venv: bookworm refuses
 # system pip installs, and this is the only Python in the container.
@@ -23,6 +29,13 @@ COPY sandbox/mcp.json /opt/frame/mcp.json
 COPY hooks/stop-commit.sh /opt/frame/hooks/stop-commit.sh
 COPY sandbox/entrypoint.sh /opt/frame/entrypoint.sh
 RUN chmod 755 /opt/frame/hooks/stop-commit.sh /opt/frame/entrypoint.sh
+
+# Sessions normally run as the host user (non-root), for which
+# --dangerously-skip-permissions is allowed. This covers the fallback where the
+# control plane itself runs as root: Claude Code refuses that flag as root
+# unless it knows it is sandboxed, and the container IS the sandbox boundary
+# (see harness.build_argv), so declare it either way.
+ENV IS_SANDBOX=1
 
 # The live app the session builds is served here and reverse-proxied by app_port.
 EXPOSE 3000
