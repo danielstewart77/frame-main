@@ -98,6 +98,21 @@ class Settings:
     default_harness: str = field(default_factory=lambda: os.getenv("FRAME_DEFAULT_HARNESS", "claude"))
     default_model: str = field(default_factory=lambda: os.getenv("FRAME_DEFAULT_MODEL", "opus"))
 
+    # Agent skills, shared read-only into every container. The two repos are
+    # cloned/pulled once to skills_root by the control plane (admin "sync"
+    # button) using the host account's git credential — never baked into the
+    # image, never handed the PAT to a container. `<root>/claude-skills` mounts
+    # at ~/.claude/skills, `<root>/codex-skills` at ~/.codex/skills.
+    skills_root: Path = field(
+        default_factory=lambda: Path(os.getenv("FRAME_SKILLS_ROOT", str(ROOT / "skills")))
+    )
+    claude_skills_repo: str = field(
+        default_factory=lambda: os.getenv("FRAME_CLAUDE_SKILLS_REPO", "")
+    )
+    codex_skills_repo: str = field(
+        default_factory=lambda: os.getenv("FRAME_CODEX_SKILLS_REPO", "")
+    )
+
     server_url: str = field(
         default_factory=lambda: os.getenv("FRAME_SERVER_URL", "http://127.0.0.1:8500")
     )

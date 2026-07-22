@@ -34,6 +34,7 @@ import auth as auth_mod
 import harness as harness_mod
 import proxy as proxy_mod
 import registry as registry_mod
+import skills as skills_mod
 import voice as voice_mod
 from config import Settings, load
 from sandbox.provision import ProvisionError, get_provisioner
@@ -581,6 +582,22 @@ def create_app(
             raise HTTPException(404, "no such user")
         registry.set_disabled(user_id, False)
         return _user_view(registry.get_user(user_id))
+
+    # --- skills (admin) ----------------------------------------------------
+
+    @app.get("/admin/skills")
+    def admin_skills(who: auth_mod.Principal = Depends(admin_only)) -> dict[str, Any]:
+        """Which skills repos are configured, cloned, and at what commit."""
+        return {"root": str(settings.skills_root), "repos": skills_mod.status(settings)}
+
+    @app.post("/admin/skills/sync")
+    def admin_skills_sync(who: auth_mod.Principal = Depends(admin_only)) -> dict[str, Any]:
+        """Clone or fast-forward the skills repos on the host (the manual button).
+
+        Runs the host account's git with its own credential — the PAT never
+        touches a container. New skills reach the next spawned session; already
+        running containers keep the set they started with."""
+        return {"results": skills_mod.sync(settings)}
 
     # --- sessions ----------------------------------------------------------
 

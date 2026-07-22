@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import json
 import os
 import pty
 import shlex
@@ -111,6 +112,7 @@ class DockerProvisioner:
     ) -> Container:
         app_port = env.pop("_app_port", None)
         app_port = int(app_port) if app_port else None
+        skill_mounts = json.loads(env.pop("_skill_mounts", "[]"))
         name = f"frame-{session['id'][:12]}"
 
         argv = [
@@ -142,6 +144,10 @@ class DockerProvisioner:
         ]
         if app_port:
             argv += ["-p", f"127.0.0.1:{app_port}:3000"]
+        # Shared skills, read-only — the agent reads them but cannot mutate the
+        # shared set, and the host clone (not a container) holds the ADO creds.
+        for host_path, container_path in skill_mounts:
+            argv += ["-v", f"{host_path}:{container_path}:ro"]
         for key, value in env.items():
             argv += ["-e", f"{key}={value}"]
         argv += [self.image]
@@ -414,6 +420,7 @@ class FakeProvisioner:
         self.removed: list[str] = []
         self.turns: list[tuple[str, str]] = []
         self.channel_configs: list[str | None] = []
+        self.skill_mounts: list[list[tuple[str, str]]] = []
         self.ttys: list["FakeTty"] = []
         self.interrupted: list[str] = []
         self.on_unsolicited: Callable[[str, dict[str, Any]], None] | None = None
@@ -435,6 +442,7 @@ class FakeProvisioner:
         workspace.ensure()
         self._counter += 1
         app_port = env.pop("_app_port", None)
+        self.skill_mounts.append(json.loads(env.pop("_skill_mounts", "[]")))
         container = Container(
             container_id=f"fake-{session['id'][:8]}-{self._counter}",
             app_port=int(app_port) if app_port else None,

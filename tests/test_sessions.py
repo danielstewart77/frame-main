@@ -33,6 +33,22 @@ def test_create_rejects_an_unknown_user(manager):
 
 
 @pytest.mark.asyncio
+async def test_present_skills_are_mounted_read_only_at_spawn(manager, user_id, provisioner, tmp_path):
+    """A cloned skills repo is shared into the container; nothing is mounted
+    when none are present."""
+    from dataclasses import replace
+
+    root = tmp_path / "sk"
+    (root / "claude-skills").mkdir(parents=True)
+    manager.settings = replace(manager.settings, skills_root=root)
+    session = manager.create(user_id)
+    await manager.ensure_running(session["id"])
+    mounts = [tuple(m) for m in provisioner.skill_mounts[-1]]
+    assert (str(root / "claude-skills"), "/workspace/.claude/skills") in mounts
+    assert not any(host.endswith("codex-skills") for host, _ in mounts)
+
+
+@pytest.mark.asyncio
 async def test_ensure_running_provisions_once_and_allocates_a_port(manager, user_id, provisioner):
     session = manager.create(user_id)
     started = await manager.ensure_running(session["id"])

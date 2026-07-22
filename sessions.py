@@ -9,10 +9,12 @@ resume.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
 import registry as registry_mod
+import skills as skills_mod
 from bus import SessionStreams, Subscription
 from config import Settings
 from sandbox.provision import Provisioner, allocate_port
@@ -154,6 +156,10 @@ class SessionManager:
         if token:
             env["ANTHROPIC_AUTH_TOKEN"] = token
             env["OPENAI_API_KEY"] = token
+        # Shared skills, read-only. Passed alongside the env (like `_app_port`)
+        # and turned into `-v …:ro` mounts by the provisioner; empty when no
+        # skills are cloned, so an unconfigured box just spawns without them.
+        env["_skill_mounts"] = json.dumps(skills_mod.skill_mounts(self.settings.skills_root))
         return env
 
     def system_prompt(self, session: dict[str, Any]) -> str:

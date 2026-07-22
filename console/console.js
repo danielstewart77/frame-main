@@ -1067,6 +1067,57 @@
     } catch (e) { adminFail(e.status === 409 ? "username taken." : "create failed."); }
   });
 
+  // --- admin: skills -------------------------------------------------------
+
+  const skillsSection = document.getElementById("skills-section");
+  const skillsList = document.getElementById("skills-list");
+  const skillsSync = document.getElementById("skills-sync");
+  const skillsError = document.getElementById("skills-error");
+
+  function renderSkills(repos) {
+    skillsList.innerHTML = "";
+    (repos || []).forEach(function (r) {
+      const row = document.createElement("div");
+      row.className = "admin-user";
+      const name = document.createElement("span");
+      name.className = "admin-user-name";
+      name.textContent = r.name + (r.head ? " — " + r.head : "");
+      row.appendChild(name);
+      const state = document.createElement("span");
+      state.className = "admin-user-role";
+      state.textContent = !r.configured ? "unconfigured" : (r.present ? "cloned" : "not synced");
+      row.appendChild(state);
+      skillsList.appendChild(row);
+    });
+  }
+
+  async function refreshSkills() {
+    try { renderSkills((await api("GET", "/admin/skills")).repos); }
+    catch (e) { skillsError.hidden = false; skillsError.textContent = "could not load skills status."; }
+  }
+
+  skillsSync.addEventListener("click", async function () {
+    skillsError.hidden = true;
+    skillsSync.disabled = true;
+    const label = skillsSync.textContent;
+    skillsSync.textContent = "syncing…";
+    try {
+      const out = await api("POST", "/admin/skills/sync");
+      const failed = (out.results || []).filter(function (r) { return r.action !== "skip" && !r.ok; });
+      if (failed.length) {
+        skillsError.hidden = false;
+        skillsError.textContent = "sync failed: " + failed.map(function (r) { return r.name; }).join(", ");
+      }
+      await refreshSkills();
+    } catch (e) {
+      skillsError.hidden = false;
+      skillsError.textContent = "sync request failed.";
+    } finally {
+      skillsSync.disabled = false;
+      skillsSync.textContent = label;
+    }
+  });
+
   // --- login ---------------------------------------------------------------
 
   const loginEl = document.getElementById("login");
@@ -1126,9 +1177,10 @@
     renderTelegram(boot.telegram);
     renderProxyKey(boot.proxy_key);
 
-    // Admin panel only for admins.
+    // Admin panels only for admins.
     adminSection.hidden = !boot.is_admin;
-    if (boot.is_admin) refreshAdminUsers();
+    skillsSection.hidden = !boot.is_admin;
+    if (boot.is_admin) { refreshAdminUsers(); refreshSkills(); }
 
     // A user flagged must_change_pw is held on the account panel until they set
     // a new password — the overlay refuses to dismiss while `mustChange` holds.

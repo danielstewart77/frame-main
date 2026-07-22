@@ -87,6 +87,15 @@
       <p class="settings-hint">Changing your password signs you out everywhere; log back in with the new one.</p>
       <p id="pw-error" class="login-error" hidden></p>
     </section>
+    <section class="settings-section" id="skills-section" hidden>
+      <h3 class="settings-heading">skills</h3>
+      <div id="skills-list" class="admin-users" aria-live="polite"></div>
+      <div class="settings-actions">
+        <button id="skills-sync" class="action-btn" type="button">sync skills</button>
+      </div>
+      <p class="settings-hint">Clones/updates the skills repos on the host and shares them read-only into new sessions. Running sessions keep what they started with.</p>
+      <p id="skills-error" class="login-error" hidden></p>
+    </section>
     <section class="settings-section" id="admin-section" hidden>
       <h3 class="settings-heading">users</h3>
       <p id="admin-status" class="settings-status"></p>
