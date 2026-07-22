@@ -31,7 +31,7 @@
     </div>
     <div class="spawn">
       <select id="spawn-harness" aria-label="harness"></select>
-      <input id="spawn-model" type="text" aria-label="model" placeholder="model">
+      <select id="spawn-model" aria-label="model"></select>
       <button id="spawn" class="action-btn" type="button" title="new session">+</button>
     </div>
     <div id="list" class="list" aria-live="polite"></div>
@@ -63,6 +63,32 @@
       </div>
       <p class="settings-hint">Create a bot with &#64;BotFather and paste its token here. The first chat to message the bot becomes its owner.</p>
       <p id="tg-error" class="login-error" hidden></p>
+    </section>
+    <section class="settings-section">
+      <h3 class="settings-heading">account</h3>
+      <p id="pw-status" class="settings-status"></p>
+      <input id="pw-current" type="password" autocomplete="current-password" placeholder="current password" aria-label="current password">
+      <input id="pw-new" type="password" autocomplete="new-password" placeholder="new password (min 8)" aria-label="new password">
+      <input id="pw-confirm" type="password" autocomplete="new-password" placeholder="confirm new password" aria-label="confirm new password">
+      <div class="settings-actions">
+        <button id="pw-save" class="action-btn" type="button">change password</button>
+      </div>
+      <p class="settings-hint">Changing your password signs you out everywhere; log back in with the new one.</p>
+      <p id="pw-error" class="login-error" hidden></p>
+    </section>
+    <section class="settings-section" id="admin-section" hidden>
+      <h3 class="settings-heading">users</h3>
+      <p id="admin-status" class="settings-status"></p>
+      <div class="settings-actions">
+        <input id="admin-new-username" type="text" autocomplete="off" placeholder="username" aria-label="new username">
+        <select id="admin-new-role" aria-label="new user role">
+          <option value="user">user</option>
+          <option value="admin">admin</option>
+        </select>
+        <button id="admin-create" class="action-btn" type="button">add user</button>
+      </div>
+      <div id="admin-users" class="admin-users" aria-live="polite"></div>
+      <p id="admin-error" class="login-error" hidden></p>
     </section>
   </div>
 </div>

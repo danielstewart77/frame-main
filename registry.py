@@ -22,6 +22,10 @@ ACTIVE = "active"
 DONE = "done"
 ARCHIVED = "archived"
 
+ROLE_ADMIN = "admin"
+ROLE_USER = "user"
+_ROLES = {ROLE_ADMIN, ROLE_USER}
+
 FRAME_CLOSED = "closed"
 FRAME_DOCKED = "docked"
 FRAME_MINIMIZED = "minimized"
@@ -53,6 +57,12 @@ class Registry:
     # database that predates it unless it is also listed here.
     _ADDED_COLUMNS = {
         "sessions": {"outcome": "TEXT"},
+        "users": {
+            "role": "TEXT NOT NULL DEFAULT 'user'",
+            "disabled": "INTEGER NOT NULL DEFAULT 0",
+            "must_change_pw": "INTEGER NOT NULL DEFAULT 0",
+            "last_login_at": "TEXT",
+        },
     }
 
     def _init_schema(self) -> None:
@@ -83,6 +93,49 @@ class Registry:
 
     def list_users(self) -> list[dict[str, Any]]:
         return _all(self.conn.execute("SELECT * FROM users ORDER BY created_at"))
+
+    # --- user administration -----------------------------------------------
+
+    def set_role(self, user_id: str, role: str) -> None:
+        if role not in _ROLES:
+            raise ValueError(f"bad role: {role}")
+        self.conn.execute("UPDATE users SET role=? WHERE user_id=?", (role, user_id))
+        self.conn.commit()
+
+    def set_disabled(self, user_id: str, disabled: bool) -> None:
+        self.conn.execute(
+            "UPDATE users SET disabled=? WHERE user_id=?", (1 if disabled else 0, user_id)
+        )
+        self.conn.commit()
+
+    def set_must_change_pw(self, user_id: str, must: bool) -> None:
+        self.conn.execute(
+            "UPDATE users SET must_change_pw=? WHERE user_id=?", (1 if must else 0, user_id)
+        )
+        self.conn.commit()
+
+    def update_last_login(self, user_id: str) -> None:
+        self.conn.execute("UPDATE users SET last_login_at=? WHERE user_id=?", (now(), user_id))
+        self.conn.commit()
+
+    def admin_count(self) -> int:
+        """How many enabled admins exist — the last one must not be removed."""
+        return int(
+            self.conn.execute(
+                "SELECT COUNT(*) AS n FROM users WHERE role=? AND disabled=0",
+                (ROLE_ADMIN,),
+            ).fetchone()["n"]
+        )
+
+    def first_credentialed_user(self) -> str | None:
+        """The earliest user that has a console login — the bootstrap admin pick."""
+        row = _one(
+            self.conn.execute(
+                """SELECT u.user_id FROM users u JOIN credentials c ON c.user_id = u.user_id
+                   ORDER BY u.created_at LIMIT 1"""
+            )
+        )
+        return row["user_id"] if row else None
 
     def link_identity(self, surface: str, external_id: str, user_id: str) -> None:
         self.conn.execute(

@@ -3,10 +3,14 @@ PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS users (
-  user_id      TEXT PRIMARY KEY,        -- uuid
-  display_name TEXT NOT NULL,
-  created_at   TEXT NOT NULL,
-  status       TEXT NOT NULL DEFAULT 'active'
+  user_id        TEXT PRIMARY KEY,        -- uuid
+  display_name   TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'active',
+  role           TEXT NOT NULL DEFAULT 'user',    -- 'admin' | 'user' (validated in code)
+  disabled       INTEGER NOT NULL DEFAULT 0,      -- a disabled user cannot authenticate
+  must_change_pw INTEGER NOT NULL DEFAULT 0,      -- forced to set a new password before use
+  last_login_at  TEXT                             -- stamped on each console login
 );
 
 -- How a user proves who they are at the console. Separate from `users` on

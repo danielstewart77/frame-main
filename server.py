@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -114,6 +115,21 @@ class TelegramConfig(BaseModel):
     bot_token: str = Field(min_length=1)
 
 
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+
+class AdminUserCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    display_name: str | None = None
+    role: str = "user"
+
+
+class RoleChange(BaseModel):
+    role: str
+
+
 # --- app --------------------------------------------------------------------
 
 
@@ -149,6 +165,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         logging.getLogger(__name__).info("recovered sessions: %s", recovered)
     except Exception:  # pragma: no cover - defensive, logged not raised
         logging.getLogger(__name__).exception("session recovery failed")
+    # Ensure the box always has an admin. On a fresh box the first registrant
+    # becomes admin; on a box that predates roles (every account defaulted to
+    # 'user'), promote the earliest credentialed account so administration is
+    # reachable without the service token. Idempotent once an admin exists.
+    registry = app.state.registry
+    if registry.count_credentials() and registry.admin_count() == 0:
+        oldest = registry.first_credentialed_user()
+        if oldest:
+            registry.set_role(oldest, registry_mod.ROLE_ADMIN)
+            logging.getLogger(__name__).info("bootstrapped admin: %s", oldest)
     reaper = asyncio.create_task(_reap_loop(app))
     supervisor = TelegramSupervisor(
         app.state.manager, app.state.registry, app.state.settings
@@ -195,13 +221,23 @@ def create_app(
     # --- authentication ----------------------------------------------------
 
     def _identify(token: str | None) -> auth_mod.Principal | None:
-        """Resolve a bearer token to whoever holds it, or None."""
+        """Resolve a bearer token to whoever holds it, or None.
+
+        A disabled user resolves to None — their live tokens stop working the
+        moment an admin disables them, without waiting for expiry. The service
+        token bypasses the DB and cannot be disabled this way.
+        """
         if not token:
             return None
         if settings.service_token and auth_mod.tokens_match(token, settings.service_token):
             return auth_mod.Principal(auth_mod.SERVICE)
         user_id = registry.user_for_token(auth_mod.token_digest(token))
-        return auth_mod.Principal(auth_mod.USER, user_id) if user_id else None
+        if not user_id:
+            return None
+        user = registry.get_user(user_id)
+        if not user or user["disabled"]:
+            return None
+        return auth_mod.Principal(auth_mod.USER, user_id, role=user["role"])
 
     def _presented(headers: Any, cookies: dict[str, str]) -> str | None:
         """A token from the Authorization header, else the console's cookie.
@@ -228,6 +264,16 @@ def create_app(
         """
         if not who.is_service:
             raise HTTPException(403, "service credentials required")
+        return who
+
+    def admin_only(who: auth_mod.Principal = Depends(principal)) -> auth_mod.Principal:
+        """User administration: create users, reset passwords, roles, enable/disable.
+
+        The service token is a superuser and qualifies; among logged-in users
+        only the admin role does. A normal user gets 403.
+        """
+        if not who.is_admin:
+            raise HTTPException(403, "admin credentials required")
         return who
 
     def socket_principal(websocket: WebSocket) -> auth_mod.Principal | None:
@@ -288,7 +334,8 @@ def create_app(
         operator standing in front of it. After that it takes the service token,
         the operator/admin credential.
         """
-        if registry.count_credentials():
+        first_account = registry.count_credentials() == 0
+        if not first_account:
             who = _identify(_presented(request.headers, request.cookies))
             if not who or not who.is_service:
                 raise HTTPException(403, "registration is closed; use the service token")
@@ -301,9 +348,14 @@ def create_app(
         registry.set_credential(
             user["user_id"], username, auth_mod.hash_password(body.password)
         )
+        # Whoever claims a fresh box is its admin — the same bootstrap the proxy
+        # does from env. Later accounts default to plain users.
+        if first_account:
+            registry.set_role(user["user_id"], registry_mod.ROLE_ADMIN)
         manager.workspace(user["user_id"]).ensure()
         return {"user_id": user["user_id"], "username": username,
-                "display_name": user["display_name"]}
+                "display_name": user["display_name"],
+                "role": registry_mod.ROLE_ADMIN if first_account else registry_mod.ROLE_USER}
 
     @app.post("/auth/login")
     def login(body: Login, response: Response) -> dict[str, Any]:
@@ -313,10 +365,14 @@ def create_app(
         stored = credential["password_hash"] if credential else auth_mod.hash_password("_")
         if not auth_mod.verify_password(body.password, stored) or not credential:
             raise HTTPException(401, "bad username or password")
+        user = registry.get_user(credential["user_id"])
+        if user and user["disabled"]:
+            raise HTTPException(403, "account disabled")
         token = auth_mod.new_token()
         issued = registry.store_token(
             auth_mod.token_digest(token), credential["user_id"], settings.auth_token_ttl_hours
         )
+        registry.update_last_login(credential["user_id"])
         response.set_cookie(
             AUTH_COOKIE,
             token,
@@ -329,6 +385,7 @@ def create_app(
             "user_id": credential["user_id"],
             "username": credential["username"],
             "expires_at": issued["expires_at"],
+            "must_change_pw": bool(user and user["must_change_pw"]),
         }
 
     @app.post("/auth/logout", status_code=204)
@@ -343,7 +400,8 @@ def create_app(
     @app.get("/auth/me")
     def whoami(who: auth_mod.Principal = Depends(principal)) -> dict[str, Any]:
         if who.is_service:
-            return {"kind": auth_mod.SERVICE, "user_id": None, "username": None}
+            return {"kind": auth_mod.SERVICE, "user_id": None, "username": None,
+                    "role": "service", "is_admin": True, "must_change_pw": False}
         user = registry.get_user(who.user_id) or {}
         credential = registry.credential_for(who.user_id) or {}
         return {
@@ -351,7 +409,33 @@ def create_app(
             "user_id": who.user_id,
             "username": credential.get("username"),
             "display_name": user.get("display_name"),
+            "role": user.get("role", registry_mod.ROLE_USER),
+            "is_admin": who.is_admin,
+            "must_change_pw": bool(user.get("must_change_pw")),
         }
+
+    @app.post("/auth/password", status_code=204)
+    def change_password(
+        request: Request, body: PasswordChange, response: Response
+    ) -> Response:
+        """Change your own password: verify the current one, set the new one,
+        then invalidate every live token so other sessions must log in again."""
+        who = principal(request)
+        if who.is_service:
+            raise HTTPException(400, "the service token has no password")
+        credential = registry.credential_for(who.user_id)
+        if not credential or not auth_mod.verify_password(
+            body.current_password, credential["password_hash"]
+        ):
+            raise HTTPException(403, "current password is incorrect")
+        registry.set_credential(
+            who.user_id, credential["username"], auth_mod.hash_password(body.new_password)
+        )
+        registry.set_must_change_pw(who.user_id, False)
+        registry.delete_user_tokens(who.user_id)
+        response = Response(status_code=204)
+        response.delete_cookie(AUTH_COOKIE)
+        return response
 
     # --- health ------------------------------------------------------------
 
@@ -385,6 +469,114 @@ def create_app(
         _check_surface(body.surface)
         user_id = manager.resolve_user(body.surface, body.external_id, body.display_name)
         return {"user_id": user_id}
+
+    # --- user administration (admin role or service token) -----------------
+
+    def _user_view(user: dict[str, Any]) -> dict[str, Any]:
+        """A user row for the admin panel, with its login name folded in."""
+        credential = registry.credential_for(user["user_id"]) or {}
+        return {
+            "user_id": user["user_id"],
+            "display_name": user["display_name"],
+            "username": credential.get("username"),
+            "role": user.get("role", registry_mod.ROLE_USER),
+            "disabled": bool(user.get("disabled")),
+            "must_change_pw": bool(user.get("must_change_pw")),
+            "last_login_at": user.get("last_login_at"),
+            "created_at": user.get("created_at"),
+        }
+
+    @app.get("/admin/users")
+    def admin_list_users(
+        who: auth_mod.Principal = Depends(admin_only),
+    ) -> list[dict[str, Any]]:
+        return [_user_view(u) for u in registry.list_users()]
+
+    @app.post("/admin/users", status_code=201)
+    def admin_create_user(
+        body: AdminUserCreate, who: auth_mod.Principal = Depends(admin_only)
+    ) -> dict[str, Any]:
+        """Create a user with a console login and a one-time temporary password.
+
+        The temp password is returned exactly once, here; the account is flagged
+        `must_change_pw` so the user must set their own before doing anything."""
+        if body.role not in registry_mod._ROLES:
+            raise HTTPException(400, f"bad role: {body.role}")
+        username = body.username.strip()
+        if not username:
+            raise HTTPException(400, "username must not be blank")
+        if registry.credential_by_username(username):
+            raise HTTPException(409, "username taken")
+        temp = _temp_password()
+        user = registry.create_user(body.display_name or username)
+        registry.set_credential(user["user_id"], username, auth_mod.hash_password(temp))
+        registry.set_role(user["user_id"], body.role)
+        registry.set_must_change_pw(user["user_id"], True)
+        manager.workspace(user["user_id"]).ensure()
+        return {**_user_view(registry.get_user(user["user_id"])), "temp_password": temp}
+
+    @app.post("/admin/users/{user_id}/reset-password")
+    def admin_reset_password(
+        user_id: str, who: auth_mod.Principal = Depends(admin_only)
+    ) -> dict[str, Any]:
+        """Reset a user's password to a fresh one-time value and force a change.
+        Their live sessions are logged out."""
+        target = registry.get_user(user_id)
+        if not target:
+            raise HTTPException(404, "no such user")
+        credential = registry.credential_for(user_id)
+        if not credential:
+            raise HTTPException(400, "user has no console login to reset")
+        temp = _temp_password()
+        registry.set_credential(user_id, credential["username"], auth_mod.hash_password(temp))
+        registry.set_must_change_pw(user_id, True)
+        registry.delete_user_tokens(user_id)
+        return {"user_id": user_id, "username": credential["username"], "temp_password": temp}
+
+    @app.post("/admin/users/{user_id}/role")
+    def admin_change_role(
+        user_id: str, body: RoleChange, who: auth_mod.Principal = Depends(admin_only)
+    ) -> dict[str, Any]:
+        if body.role not in registry_mod._ROLES:
+            raise HTTPException(400, f"bad role: {body.role}")
+        target = registry.get_user(user_id)
+        if not target:
+            raise HTTPException(404, "no such user")
+        # Don't strip the last admin, and don't let an admin demote themselves
+        # into a room with no admins left.
+        if (
+            target["role"] == registry_mod.ROLE_ADMIN
+            and body.role != registry_mod.ROLE_ADMIN
+            and registry.admin_count() <= 1
+        ):
+            raise HTTPException(400, "cannot remove the last admin")
+        registry.set_role(user_id, body.role)
+        return _user_view(registry.get_user(user_id))
+
+    @app.post("/admin/users/{user_id}/disable")
+    def admin_disable_user(
+        user_id: str, who: auth_mod.Principal = Depends(admin_only)
+    ) -> dict[str, Any]:
+        target = registry.get_user(user_id)
+        if not target:
+            raise HTTPException(404, "no such user")
+        if who.user_id == user_id:
+            raise HTTPException(400, "cannot disable your own account")
+        if target["role"] == registry_mod.ROLE_ADMIN and registry.admin_count() <= 1:
+            raise HTTPException(400, "cannot disable the last admin")
+        registry.set_disabled(user_id, True)
+        registry.delete_user_tokens(user_id)  # cut off live sessions immediately
+        return _user_view(registry.get_user(user_id))
+
+    @app.post("/admin/users/{user_id}/enable")
+    def admin_enable_user(
+        user_id: str, who: auth_mod.Principal = Depends(admin_only)
+    ) -> dict[str, Any]:
+        target = registry.get_user(user_id)
+        if not target:
+            raise HTTPException(404, "no such user")
+        registry.set_disabled(user_id, False)
+        return _user_view(registry.get_user(user_id))
 
     # --- sessions ----------------------------------------------------------
 
@@ -736,16 +928,65 @@ def create_app(
         user_id = who.user_id
         manager.workspace(user_id).ensure()
         credential = registry.credential_for(user_id) or {}
+        user = registry.get_user(user_id) or {}
         return {
             "user_id": user_id,
             "external_id": user_id,
             "username": credential.get("username"),
+            "role": user.get("role", registry_mod.ROLE_USER),
+            "is_admin": who.is_admin,
+            "must_change_pw": bool(user.get("must_change_pw")),
             "sidebar_collapsed": registry.sidebar_collapsed("web", user_id),
             "frames": registry.open_frames(user_id),
             "telegram": _telegram_summary(user_id),
             "harnesses": [harness_mod.CLAUDE, harness_mod.CODEX],
             "default_harness": settings.default_harness,
             "default_model": settings.default_model,
+        }
+
+    @app.get("/models")
+    async def list_models(
+        request: Request,
+        harness: str = Query(harness_mod.CLAUDE),
+        who: auth_mod.Principal = Depends(principal),
+    ) -> dict[str, Any]:
+        """Models the proxy offers for a harness, for the spawn picker.
+
+        Proxied from the configured inference proxy using frame-main's proxy
+        token — the proxy already hides admin-only deployments based on that
+        key's role. Degrades to the configured default when no proxy is set or
+        it can't be reached, so the picker still works offline."""
+        default = settings.default_model
+        base = settings.anthropic_base_url.rstrip("/")
+        token = settings.ulmaiproxy_auth_token
+        fallback = {
+            "harness": harness,
+            "default": default,
+            "models": [{"id": default}] if default else [],
+            "source": "fallback",
+        }
+        if not base or not token:
+            return fallback
+        # Claude speaks the Anthropic Messages API; codex the OpenAI one.
+        path = "/v1/anthropic/models" if harness == harness_mod.CLAUDE else "/v1/models"
+        try:
+            resp = await request.app.state.proxy_client.get(
+                base + path, headers={"Authorization": f"Bearer {token}"}
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+        except (httpx.HTTPError, ValueError):
+            return fallback
+        models = [
+            {"id": m["id"], "label": m.get("label"), "description": m.get("description")}
+            for m in data
+            if isinstance(m, dict) and m.get("id")
+        ]
+        return {
+            "harness": harness,
+            "default": default,
+            "models": models or fallback["models"],
+            "source": "proxy",
         }
 
     # --- sidecar panes: browser + full terminal ------------------------------
@@ -936,3 +1177,8 @@ def _resolve(manager: SessionManager, session_id: str) -> dict[str, Any]:
 def _check_surface(surface: str) -> None:
     if surface not in SURFACES:
         raise HTTPException(400, f"unknown surface: {surface}")
+
+
+def _temp_password() -> str:
+    """A one-time password shown once on admin create/reset (~16 chars)."""
+    return secrets.token_urlsafe(12)

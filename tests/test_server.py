@@ -241,3 +241,16 @@ def test_voice_round_trip_through_the_fake_backend(client):
         "/voice/transcribe", files={"file": ("voice.ogg", spoken.content, "audio/ogg")}
     )
     assert transcribed.json()["text"] == "hold my beer"
+
+
+def test_models_falls_back_to_default_without_a_proxy(client):
+    """No proxy configured in tests, so /models degrades to the default model
+    rather than erroring — the picker still works offline."""
+    body = client.get("/models?harness=claude").json()
+    assert body["source"] == "fallback"
+    assert body["default"] == "opus"
+    assert body["models"] == [{"id": "opus"}]
+
+
+def test_models_requires_authentication(anon_client):
+    assert anon_client.get("/models").status_code == 401

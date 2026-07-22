@@ -30,6 +30,7 @@
   let filter = "active";
   let listed = [];
   let maximized = null;
+  let mustChange = false;     // forced password change holds the settings overlay open
 
   // --- api ----------------------------------------------------------------
 
@@ -817,13 +818,37 @@
   // --- spawn ---------------------------------------------------------------
 
   spawnBtn.addEventListener("click", async function () {
-    const body = { harness: spawnHarness.value, model: spawnModel.value.trim() || undefined };
+    const body = { harness: spawnHarness.value, model: spawnModel.value || undefined };
     try {
       const session = await api("POST", "/users/" + boot.user_id + "/sessions", body);
       if (filter !== "active") setFilter("active"); else await refreshList();
       openFrame(session);
     } catch (e) {}
   });
+
+  // Populate the model dropdown from the proxy for the selected harness. The
+  // proxy filters to what our key may use; falls back to the default offline.
+  async function loadModels() {
+    let data;
+    try {
+      data = await api("GET", "/models?harness=" + encodeURIComponent(spawnHarness.value));
+    } catch (e) {
+      data = { models: [], default: boot && boot.default_model };
+    }
+    const models = (data.models && data.models.length)
+      ? data.models
+      : (data.default ? [{ id: data.default }] : []);
+    spawnModel.innerHTML = "";
+    models.forEach(function (m) {
+      const option = document.createElement("option");
+      option.value = m.id;
+      option.textContent = m.label ? m.id + " — " + m.label : m.id;
+      if (m.id === data.default) option.selected = true;
+      spawnModel.appendChild(option);
+    });
+  }
+
+  spawnHarness.addEventListener("change", loadModels);
 
   // --- settings ------------------------------------------------------------
 
@@ -853,9 +878,9 @@
     tgToken.value = "";
     settingsEl.hidden = false;
   });
-  settingsClose.addEventListener("click", function () { settingsEl.hidden = true; });
+  settingsClose.addEventListener("click", function () { if (!mustChange) settingsEl.hidden = true; });
   settingsEl.addEventListener("click", function (e) {
-    if (e.target === settingsEl) settingsEl.hidden = true;
+    if (e.target === settingsEl && !mustChange) settingsEl.hidden = true;
   });
 
   tgSave.addEventListener("click", async function () {
@@ -880,6 +905,125 @@
       await api("DELETE", "/users/" + boot.user_id + "/telegram");
       renderTelegram(null);
     } catch (e) {}
+  });
+
+  // --- account: change own password ----------------------------------------
+
+  const pwCurrent = document.getElementById("pw-current");
+  const pwNew = document.getElementById("pw-new");
+  const pwConfirm = document.getElementById("pw-confirm");
+  const pwSave = document.getElementById("pw-save");
+  const pwError = document.getElementById("pw-error");
+
+  pwSave.addEventListener("click", async function () {
+    pwError.hidden = true;
+    const current = pwCurrent.value, next = pwNew.value;
+    if (next.length < 8) {
+      pwError.hidden = false; pwError.textContent = "new password must be at least 8 characters.";
+      return;
+    }
+    if (next !== pwConfirm.value) {
+      pwError.hidden = false; pwError.textContent = "new password and confirmation do not match.";
+      return;
+    }
+    try {
+      await api("POST", "/auth/password", { current_password: current, new_password: next });
+    } catch (e) {
+      pwError.hidden = false;
+      pwError.textContent = e.status === 403 ? "current password is incorrect." : "could not change password.";
+      return;
+    }
+    // The change invalidates every token (this cookie included), so land on login.
+    pwCurrent.value = pwNew.value = pwConfirm.value = "";
+    mustChange = false;
+    settingsEl.hidden = true;
+    app.hidden = true;
+    showLogin("password changed — sign in again.");
+  });
+
+  // --- admin: user management ----------------------------------------------
+
+  const adminSection = document.getElementById("admin-section");
+  const adminUsers = document.getElementById("admin-users");
+  const adminNewUsername = document.getElementById("admin-new-username");
+  const adminNewRole = document.getElementById("admin-new-role");
+  const adminCreate = document.getElementById("admin-create");
+  const adminStatus = document.getElementById("admin-status");
+  const adminError = document.getElementById("admin-error");
+
+  function adminOk(msg) { adminError.hidden = true; adminStatus.textContent = msg || ""; }
+  function adminFail(msg) { adminError.hidden = false; adminError.textContent = msg; }
+
+  function adminRow(u) {
+    const row = document.createElement("div");
+    row.className = "admin-user";
+
+    const name = document.createElement("span");
+    name.className = "admin-user-name";
+    name.textContent = u.username || u.display_name || u.user_id;
+    if (u.disabled) name.textContent += " (disabled)";
+    row.appendChild(name);
+
+    const role = document.createElement("span");
+    role.className = "admin-user-role";
+    role.textContent = u.role;
+    row.appendChild(role);
+
+    const reset = document.createElement("button");
+    reset.type = "button"; reset.className = "action-btn";
+    reset.textContent = "reset pw";
+    reset.addEventListener("click", async function () {
+      try {
+        const r = await api("POST", "/admin/users/" + u.user_id + "/reset-password");
+        adminOk("temp password for " + r.username + ": " + r.temp_password);
+      } catch (e) { adminFail("reset failed."); }
+    });
+    row.appendChild(reset);
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "action-btn" + (u.disabled ? "" : " danger");
+    toggle.textContent = u.disabled ? "enable" : "disable";
+    toggle.addEventListener("click", async function () {
+      try {
+        await api("POST", "/admin/users/" + u.user_id + "/" + (u.disabled ? "enable" : "disable"));
+        adminOk(""); refreshAdminUsers();
+      } catch (e) { adminFail(e.status === 400 ? "not allowed (last admin or your own account)." : "failed."); }
+    });
+    row.appendChild(toggle);
+
+    const nextRole = u.role === "admin" ? "user" : "admin";
+    const roleBtn = document.createElement("button");
+    roleBtn.type = "button"; roleBtn.className = "action-btn";
+    roleBtn.textContent = "make " + nextRole;
+    roleBtn.addEventListener("click", async function () {
+      try {
+        await api("POST", "/admin/users/" + u.user_id + "/role", { role: nextRole });
+        adminOk(""); refreshAdminUsers();
+      } catch (e) { adminFail(e.status === 400 ? "not allowed (last admin)." : "failed."); }
+    });
+    row.appendChild(roleBtn);
+
+    return row;
+  }
+
+  async function refreshAdminUsers() {
+    let users;
+    try { users = await api("GET", "/admin/users"); }
+    catch (e) { adminFail("could not load users."); return; }
+    adminUsers.innerHTML = "";
+    users.forEach(function (u) { adminUsers.appendChild(adminRow(u)); });
+  }
+
+  adminCreate.addEventListener("click", async function () {
+    const username = adminNewUsername.value.trim();
+    if (!username) { adminFail("enter a username."); return; }
+    try {
+      const r = await api("POST", "/admin/users", { username: username, role: adminNewRole.value });
+      adminNewUsername.value = "";
+      adminOk("created " + r.username + " — temp password: " + r.temp_password);
+      refreshAdminUsers();
+    } catch (e) { adminFail(e.status === 409 ? "username taken." : "create failed."); }
   });
 
   // --- login ---------------------------------------------------------------
@@ -931,7 +1075,7 @@
       if (name === boot.default_harness) option.selected = true;
       spawnHarness.appendChild(option);
     });
-    spawnModel.value = boot.default_model;
+    await loadModels();
 
     if (boot.sidebar_collapsed && isWide()) {
       app.dataset.rail = "collapsed";
@@ -939,6 +1083,19 @@
     }
 
     renderTelegram(boot.telegram);
+
+    // Admin panel only for admins.
+    adminSection.hidden = !boot.is_admin;
+    if (boot.is_admin) refreshAdminUsers();
+
+    // A user flagged must_change_pw is held on the account panel until they set
+    // a new password — the overlay refuses to dismiss while `mustChange` holds.
+    mustChange = !!boot.must_change_pw;
+    if (mustChange) {
+      settingsEl.hidden = false;
+      pwError.hidden = false;
+      pwError.textContent = "set a new password to continue.";
+    }
 
     await refreshList();
 

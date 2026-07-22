@@ -90,10 +90,19 @@ class Principal:
 
     kind: str
     user_id: str | None = None
+    role: str | None = None
 
     @property
     def is_service(self) -> bool:
         return self.kind == SERVICE
+
+    @property
+    def is_admin(self) -> bool:
+        """Fleet-wide user administration. The service token is a superuser; a
+        logged-in user qualifies only with the admin role. Kept separate from
+        `owns`: an admin manages accounts, but does not thereby own everyone's
+        sessions."""
+        return self.is_service or self.role == "admin"
 
     def owns(self, user_id: str) -> bool:
         """The operator acts for everyone; a user acts only for themselves."""

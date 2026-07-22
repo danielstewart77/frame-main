@@ -99,6 +99,21 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .settings-actions { display: flex; gap: 6px; }
 .settings-hint { margin: 0; color: var(--dim); font-size: 11px; }
 
+.admin-users { display: flex; flex-direction: column; gap: 6px; }
+.admin-user {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.admin-user-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-user-role { color: var(--dim); text-transform: uppercase; letter-spacing: .05em; font-size: 10px; }
+.admin-user .action-btn { padding: 4px 8px; font-size: 11px; }
+
 .app {
   display: grid;
   grid-template-columns: 260px 1fr;
