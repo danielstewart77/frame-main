@@ -160,6 +160,14 @@ class SessionManager:
         # and turned into `-v …:ro` mounts by the provisioner; empty when no
         # skills are cloned, so an unconfigured box just spawns without them.
         env["_skill_mounts"] = json.dumps(skills_mod.skill_mounts(self.settings.skills_root))
+        # Per-session harness state, read-write. Persists the conversation store
+        # across container teardown so a resumed session continues its context,
+        # not just its committed work.
+        state = self.workspace(session["user_id"]).session_state_dir(session["id"])
+        env["_state_mounts"] = json.dumps([
+            (str(state / "claude-projects"), "/workspace/.claude/projects"),
+            (str(state / "codex-sessions"), "/workspace/.codex/sessions"),
+        ])
         return env
 
     def system_prompt(self, session: dict[str, Any]) -> str:
@@ -343,6 +351,7 @@ class SessionManager:
         self.transcript.discard(session_id)
         self.streams.discard(session_id)
         self.registry.delete_session_events(session_id)
+        self.workspace(session["user_id"]).remove_session_state(session_id)
         self.registry.delete_session(session_id)
 
     async def recover(self) -> dict[str, list[str]]:

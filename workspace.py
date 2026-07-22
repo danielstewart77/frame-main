@@ -44,6 +44,22 @@ class Workspace:
     def transcripts(self) -> Path:
         return self.path / "transcripts"
 
+    # Per-session harness state that must outlive the container. The conversation
+    # store the harness reads for `--resume` lives inside the container, which is
+    # thrown away on suspend/reap; mounting it from here is what lets a resumed
+    # session pick up its train of thought, not just its committed work.
+    def session_state_dir(self, session_id: str) -> Path:
+        """Ensure and return the per-session state base (with harness subdirs)."""
+        base = self.path / "sessions" / session_id
+        (base / "claude-projects").mkdir(parents=True, exist_ok=True)
+        (base / "codex-sessions").mkdir(parents=True, exist_ok=True)
+        return base
+
+    def remove_session_state(self, session_id: str) -> None:
+        target = self.path / "sessions" / session_id
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+
     def exists(self) -> bool:
         return self.origin.exists() and self.memory_db.exists() and self.identity.exists()
 

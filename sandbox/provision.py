@@ -113,6 +113,7 @@ class DockerProvisioner:
         app_port = env.pop("_app_port", None)
         app_port = int(app_port) if app_port else None
         skill_mounts = json.loads(env.pop("_skill_mounts", "[]"))
+        state_mounts = json.loads(env.pop("_state_mounts", "[]"))
         name = f"frame-{session['id'][:12]}"
 
         argv = [
@@ -148,6 +149,10 @@ class DockerProvisioner:
         # shared set, and the host clone (not a container) holds the ADO creds.
         for host_path, container_path in skill_mounts:
             argv += ["-v", f"{host_path}:{container_path}:ro"]
+        # Per-session harness state, read-write — the conversation store that
+        # survives a suspend so `--resume` continues where it left off.
+        for host_path, container_path in state_mounts:
+            argv += ["-v", f"{host_path}:{container_path}"]
         for key, value in env.items():
             argv += ["-e", f"{key}={value}"]
         argv += [self.image]
@@ -421,6 +426,7 @@ class FakeProvisioner:
         self.turns: list[tuple[str, str]] = []
         self.channel_configs: list[str | None] = []
         self.skill_mounts: list[list[tuple[str, str]]] = []
+        self.state_mounts: list[list[tuple[str, str]]] = []
         self.ttys: list["FakeTty"] = []
         self.interrupted: list[str] = []
         self.on_unsolicited: Callable[[str, dict[str, Any]], None] | None = None
@@ -443,6 +449,7 @@ class FakeProvisioner:
         self._counter += 1
         app_port = env.pop("_app_port", None)
         self.skill_mounts.append(json.loads(env.pop("_skill_mounts", "[]")))
+        self.state_mounts.append(json.loads(env.pop("_state_mounts", "[]")))
         container = Container(
             container_id=f"fake-{session['id'][:8]}-{self._counter}",
             app_port=int(app_port) if app_port else None,

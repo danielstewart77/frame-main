@@ -49,6 +49,34 @@ async def test_present_skills_are_mounted_read_only_at_spawn(manager, user_id, p
 
 
 @pytest.mark.asyncio
+async def test_per_session_state_is_mounted_for_resume(manager, user_id, provisioner):
+    """The harness conversation store is mounted from a per-session host dir so
+    it survives container teardown — the difference between resuming work and
+    resuming the train of thought."""
+    session = manager.create(user_id)
+    await manager.ensure_running(session["id"])
+    mounts = {c: h for h, c in (tuple(m) for m in provisioner.state_mounts[-1])}
+    assert "/workspace/.claude/projects" in mounts
+    assert "/workspace/.codex/sessions" in mounts
+    # backed by a per-session dir on the host, and actually created
+    from pathlib import Path
+    assert session["id"] in mounts["/workspace/.claude/projects"]
+    assert Path(mounts["/workspace/.claude/projects"]).is_dir()
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_session_removes_its_state(manager, user_id, provisioner):
+    from pathlib import Path
+
+    session = manager.create(user_id)
+    await manager.ensure_running(session["id"])
+    state = Path(manager.workspace(user_id).path) / "sessions" / session["id"]
+    assert state.is_dir()
+    await manager.delete(session["id"])
+    assert not state.exists()
+
+
+@pytest.mark.asyncio
 async def test_ensure_running_provisions_once_and_allocates_a_port(manager, user_id, provisioner):
     session = manager.create(user_id)
     started = await manager.ensure_running(session["id"])
