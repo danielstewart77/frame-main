@@ -3,7 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>frame</title>
+<title>frame [main >▮]</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" type="image/svg+xml" href="/console/static/favicon.svg">
+<link rel="apple-touch-icon" href="/console/static/apple-touch-icon.png">
+<link rel="manifest" href="/console/static/site.webmanifest">
+<meta name="theme-color" content="#0c0f13">
 <link rel="stylesheet" href="/console/static/console.css">
 </head>
 <body>
@@ -18,6 +23,17 @@
 </div>
 
 <div class="app" id="app" data-view="stage" data-rail="expanded" hidden>
+
+  <nav class="topbar">
+    <div class="brand">
+      <img class="brand-logo" src="/console/static/favicon.svg" width="20" height="20" alt="" aria-hidden="true">
+      <span class="brand-mark">frame&nbsp;<span class="brand-prompt">[main <span class="brand-chev">&gt;</span><span class="brand-cursor">&#9646;</span>]</span></span>
+    </div>
+    <div class="nav-right">
+      <span class="nav-user" id="nav-user"></span>
+      <button id="logout" class="action-btn" type="button" title="sign out">sign out</button>
+    </div>
+  </nav>
 
   <aside class="rail" id="rail">
     <header class="rail-head">

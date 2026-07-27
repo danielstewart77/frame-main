@@ -45,6 +45,20 @@ SURFACES = {"telegram", "web"}
 CONSOLE_DIR = Path(__file__).resolve().parent / "console"
 AUTH_COOKIE = "frame_auth"
 
+# The console is served live off disk with no build step or content-hashed
+# filenames, so a returning browser can pair a freshly-edited index.html with a
+# heuristically-cached console.css/js and render a broken layout. `no-cache`
+# forces revalidation on every load (cheap 304s via the ETag StaticFiles already
+# sends) so HTML, CSS and JS always move together.
+class _RevalidatingStatic(StaticFiles):
+    async def get_response(self, path: str, scope: Any) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+_NO_CACHE = {"Cache-Control": "no-cache"}
+
 
 # --- request bodies ---------------------------------------------------------
 
@@ -1024,11 +1038,18 @@ def create_app(
 
     # --- the web console -----------------------------------------------------
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Response:
+        """Browsers request /favicon.ico by convention regardless of <link> tags."""
+        return FileResponse(
+            CONSOLE_DIR / "favicon.ico", media_type="image/x-icon", headers=_NO_CACHE
+        )
+
     @app.get("/console")
     def console_page() -> Response:
         """The console shell. Public: the page itself is just the login form
         until a token is in hand. Everything it then fetches is authenticated."""
-        return FileResponse(CONSOLE_DIR / "index.html")
+        return FileResponse(CONSOLE_DIR / "index.html", headers=_NO_CACHE)
 
     @app.get("/console/bootstrap")
     def console_bootstrap(
@@ -1282,7 +1303,7 @@ def create_app(
         return Response(content=audio, media_type="audio/mpeg")
 
     app.mount(
-        "/console/static", StaticFiles(directory=CONSOLE_DIR), name="console-static"
+        "/console/static", _RevalidatingStatic(directory=CONSOLE_DIR), name="console-static"
     )
     return app
 

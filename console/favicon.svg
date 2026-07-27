@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="frame">
+  <defs>
+    <filter id="hum" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="0.6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- chassis -->
+  <rect x="1" y="1" width="30" height="30" rx="6.5" fill="#0d1117"/>
+  <!-- the frame, drawn as terminal brackets [ ] -->
+  <g fill="none" stroke="#3c7686" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11 6 H7 V26 H11"/>
+    <path d="M21 6 H25 V26 H21"/>
+  </g>
+  <!-- the live session: prompt + cursor, humming in ice-cyan -->
+  <g filter="url(#hum)">
+    <polyline points="10.5,12.5 14,16 10.5,19.5" fill="none" stroke="#4ee8fc"
+              stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="17.4" y="12.6" width="3" height="6.8" rx="0.9" fill="#4ee8fc"/>
+  </g>
+</svg>

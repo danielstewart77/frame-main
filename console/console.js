@@ -20,6 +20,8 @@
   const spawnBtn = document.getElementById("spawn");
   const spawnHarness = document.getElementById("spawn-harness");
   const spawnModel = document.getElementById("spawn-model");
+  const logoutBtn = document.getElementById("logout");
+  const navUser = document.getElementById("nav-user");
 
   const ACCENTS = ["#4ee8fc", "#4ee88a", "#c9a84c", "#e0724e", "#b06ee0", "#e05c8a", "#7e93a8"];
   const TTS_IDLE_MS = 1200;
@@ -748,6 +750,46 @@
 
   function showView(name) { app.dataset.view = name; }
 
+  // --- live tab title ------------------------------------------------------
+  // The tab reads like a prompt: `frame [main >▮]` at rest, and shows how many
+  // sessions are humming when work is live — `frame [main >▮ ●3]`. The `●`
+  // echoes the running-dot in the sidebar. Polled on its own timer so the
+  // count is right even while the archived tab is showing.
+  const TITLE_IDLE = "frame [main >▮]";           // >▮
+  const TITLE_POLL_MS = 5000;
+  let titleTimer = null;
+
+  function runningCount(sessions) {
+    return sessions.reduce(function (n, s) { return n + (s.container_id ? 1 : 0); }, 0);
+  }
+
+  function setTitle(running) {
+    document.title = running > 0
+      ? "frame [main >▮ ●" + running + "]"   // >▮ ●N
+      : TITLE_IDLE;
+  }
+
+  async function pollTitle() {
+    if (!boot) return;
+    try {
+      const active = await api("GET", "/users/" + boot.user_id + "/sessions?status=active");
+      setTitle(runningCount(active));
+    } catch (e) {
+      // transient failure: leave the last good title in place
+    }
+  }
+
+  function startTitlePoll() {
+    stopTitlePoll();
+    pollTitle();
+    titleTimer = setInterval(pollTitle, TITLE_POLL_MS);
+  }
+
+  function stopTitlePoll() {
+    if (titleTimer) { clearInterval(titleTimer); titleTimer = null; }
+    document.title = TITLE_IDLE;
+  }
+
   // --- sidebar -------------------------------------------------------------
 
   function renderList() {
@@ -790,6 +832,9 @@
       listed = [];
     }
     renderList();
+    // On the active tab we already hold the running set — reflect it in the
+    // title now; the poll keeps it honest when the archived tab is showing.
+    if (filter === "active") setTitle(runningCount(listed));
   }
 
   function setFilter(next) {
@@ -1234,6 +1279,7 @@
   // The token comes back as an httponly cookie the browser attaches to every
   // same-origin request and the WebSocket handshake, so nothing here holds it.
   function showLogin(message) {
+    stopTitlePoll();
     app.hidden = true;
     loginEl.hidden = false;
     loginError.hidden = !message;
@@ -1259,10 +1305,24 @@
     enter();
   });
 
+  logoutBtn.addEventListener("click", async function () {
+    logoutBtn.disabled = true;
+    try {
+      await api("POST", "/auth/logout");
+    } catch (e) {
+      // Even if the request fails, fall through to a clean reload.
+    }
+    // A full reload is the simplest correct teardown: it drops every open
+    // frame, WebSocket, mic and timer, then start() sees the cleared cookie
+    // (401) and lands on the login gate.
+    location.reload();
+  });
+
   // --- boot ----------------------------------------------------------------
 
   async function enter() {
     boot = await api("GET", "/console/bootstrap");
+    navUser.textContent = boot.username || "";
 
     spawnHarness.innerHTML = "";
     boot.harnesses.forEach(function (name) {
@@ -1302,6 +1362,8 @@
     // Restore the frames the server says are open. Mobile lands on the list.
     boot.frames.forEach(function (session) { openFrame(session); });
     showView(isWide() || frames.size ? "stage" : "list");
+
+    startTitlePoll();
   }
 
   (async function start() {

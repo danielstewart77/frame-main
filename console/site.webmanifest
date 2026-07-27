@@ -1,0 +1,16 @@
+{
+  "name": "frame",
+  "short_name": "frame",
+  "description": "Cold, streamlined terminal sessions, humming along.",
+  "start_url": "/console",
+  "scope": "/console",
+  "display": "standalone",
+  "background_color": "#0c0f13",
+  "theme_color": "#0c0f13",
+  "icons": [
+    { "src": "/console/static/favicon.svg", "type": "image/svg+xml", "sizes": "any" },
+    { "src": "/console/static/icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "/console/static/icon-512.png", "type": "image/png", "sizes": "512x512" },
+    { "src": "/console/static/apple-touch-icon.png", "type": "image/png", "sizes": "180x180" }
+  ]
+}
